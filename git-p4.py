@@ -1324,12 +1324,9 @@ class P4Fsck(Command, P4UserMap):
         sys.stdout.write('\rHashing: (git:{:8},p4:{:8})'.format(ngitfile,np4files))
         sys.stdout.flush()
 
-    def run(self, args):
+    def fsckCommit(self,ref):
         p4_digest={}
         git_digest={}
-        ref = 'HEAD'
-        if len(args) >0:
-            ref = args[0]
         log = extractLogMessageFromGitCommit(ref)
         settings = extractSettingsGitLog(log)
         print "Checking {}...@{}".format(settings['depot-paths'][0],settings['change']) 
@@ -1373,6 +1370,14 @@ class P4Fsck(Command, P4UserMap):
             print '- {}'.format(f)
         for f in gitset.difference(p4set):
             print '+ {}'.format(f)
+        return True
+
+    def run(self, args):
+        refs = 'HEAD'
+        if len(args) >0:
+            refs = args[0]
+        for ref in read_pipe_lines('git rev-list {}'.format(refs)):
+            self.fsckCommit(ref)
         return True
 
 class P4Submit(Command, P4UserMap):
