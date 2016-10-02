@@ -154,22 +154,45 @@ def read_pipe(c, ignore_error=False):
         die('Command failed: %s\nError: %s' % (str(c), err))
     return out
 
-def get_md5_git_blob(blobhash):
+def get_md5_from_fobj(fobj):
     hobj=hashlib.md5()
-    if verbose:
-        sys.stderr.write('MD5 of git blob: %s\n' % str(blobhash))
-    c ='git cat-file blob {}'.format(blobhash)
-    p = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
     while True:
-        buf = p.stdout.read(8192)
+        buf = fobj.read(8192)
         if buf: 
             hobj.update(buf)
         else:
             break
+    return hobj.hexdigest()
+
+def get_md5_p4_safe_method(headType,depotFile,headChange,digest=None,**kargs):
+    """ P4 returns the MD5 digest of the file in their database, what may differ
+    from the final output. Retrieving and recomputing MD5 is expensive but it's safer"""
+    recompute_hash=False
+    md5digest_out = ''
+    (p4type,p4mods)=split_p4_type(headType)
+    if not digest:
+        recompute_hash=True
+    elif 'k' in p4mods:
+        recompute_hash = True
+    elif 'utf16' == p4type: 
+        recompute_hash = True
+    if recompute_hash:
+        c ='p4 print -k -q -o - {}@{}'.format(depotFile,headChange)
+        p = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
+        md5digest_out = get_md5_from_fobj(p.stdout)
+        p.wait()
+    else:
+        md5digest_out = digest
+    return md5digest_out
+
+def get_md5_git_blob(blobhash):
+    if verbose:
+        sys.stderr.write('MD5 of git blob: %s\n' % str(blobhash))
+    c ='git cat-file blob {}'.format(blobhash)
+    p = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
+    md5digest=get_md5_from_fobj(p.stdout)
     p.wait()
-    #if p.returncode != 0 and not ignore_error:
-    #    die('Command failed: %s\nError: %s' % (str(c), p.stderr))
-    return hobj.hexdigest() 
+    return md5digest 
 
 def p4_read_pipe(c, ignore_error=False):
     real_cmd = p4_build_cmd(c)
@@ -1288,6 +1311,7 @@ class P4RollBack(Command):
                     print "%s rewound to %s" % (ref, change)
 
         return True
+
 class P4Fsck(Command, P4UserMap):
     def __init__(self):
         Command.__init__(self)
@@ -1299,6 +1323,7 @@ class P4Fsck(Command, P4UserMap):
     def showHashProgress(self,ngitfile, np4files):
         sys.stdout.write('\rHashing: (git:{:8},p4:{:8})'.format(ngitfile,np4files))
         sys.stdout.flush()
+
     def run(self, args):
         p4_digest={}
         git_digest={}
@@ -1319,27 +1344,25 @@ class P4Fsck(Command, P4UserMap):
                     err_text = err_text+ ' error: {}'.format(p4fstat_file['data'])
                 die(err_text)
             if p4fstat_file.has_key('digest'):
-                p4_digest[p4fstat_file['depotFile']] =  p4fstat_file['digest']
+                p4_digest[p4fstat_file['depotFile']] = {'headType':p4fstat_file['headType'],
+                        'p4db-md5':p4fstat_file['digest'],
+                        'gitdb-md5':get_md5_p4_safe_method(**p4fstat_file)}
         self.showHashProgress(0,len(p4_digest.keys()))
         treecmp=re.compile('^([\d]{6})[\s]+([\S]+)[\s]+([0-9a-fA-F]+)[\s]+(.*)$')
         for i, file_in_tree in enumerate(read_pipe_lines('git ls-tree -r {}'.format(ref))):
             m=treecmp.match(file_in_tree)
             if m: 
-                #hobj=hashlib.md5()
-                #fp = read_pipe_as_file('git cat-file blob {}'.format(m.group(3)))
-                #for bu in fp.read(8192): 
-                #    hobj.update(bu)
-                #    #hobj.update(read_pipe('git cat-file blob {}'.format(m.group(3))))
                 git_digest['{}{}'.format(settings['depot-paths'][0],m.group(4))]=get_md5_git_blob(m.group(3))
             if i%20 == 19:
                 self.showHashProgress(len(git_digest.keys()),len(p4_digest.keys()))
         self.showHashProgress(len(git_digest.keys()),len(p4_digest.keys()))
+        print
         l_p4 = p4_digest.copy()
         r_git = git_digest.copy()
         for k,v in p4_digest.iteritems():
             if git_digest.has_key(k):
-                if git_digest[k].lower() != v.lower():
-                    print 'mismatch: {} p4:{} git:{}\n'.format(k,v,git_digest[k]) 
+                if git_digest[k].lower() != v['gitdb-md5'].lower():
+                    print 'mismatch: {} p4:{} git:{}'.format(k,v,git_digest[k]) 
 
         return True
 
