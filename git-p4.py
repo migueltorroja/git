@@ -1343,6 +1343,9 @@ class P4Fsck(Command, P4UserMap):
                 if 'data' in p4fstat_file:
                     err_text = err_text+ ' error: {}'.format(p4fstat_file['data'])
                 die(err_text)
+            if p4fstat_file['headAction'] == 'purge':
+                # The file was deleted from p4 server, ignoring it
+                continue
             if p4fstat_file.has_key('digest'):
                 p4_digest[wildcard_decode(p4fstat_file['depotFile'])] = {'headType':p4fstat_file['headType'],
                         'p4db-md5':p4fstat_file['digest'],
