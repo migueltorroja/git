@@ -1336,7 +1336,7 @@ class P4Fsck(Command, P4UserMap):
         p4fstat_list = p4CmdList('fstat -Ol {}...@{}'.format(settings['depot-paths'][0],settings['change']))
         if not isinstance(p4fstat_list,list or not isinstance(p4fstat_list[0],dict)):
             die('Output error (p4 fstat command)')
-        for p4fstat_file in p4fstat_list:
+        for i, p4fstat_file in enumerate(p4fstat_list):
             if 'p4ExitCode' in p4fstat_file or \
             ('code' in p4fstat_file and p4fstat_file['code'] == 'error'):
                 err_text = 'P4 command error'
@@ -1347,7 +1347,8 @@ class P4Fsck(Command, P4UserMap):
                 p4_digest[p4fstat_file['depotFile']] = {'headType':p4fstat_file['headType'],
                         'p4db-md5':p4fstat_file['digest'],
                         'gitdb-md5':get_md5_p4_safe_method(**p4fstat_file)}
-        self.showHashProgress(0,len(p4_digest.keys()))
+            if i%20 == 19:
+                self.showHashProgress(0,len(p4_digest.keys()))
         treecmp=re.compile('^([\d]{6})[\s]+([\S]+)[\s]+([0-9a-fA-F]+)[\s]+(.*)$')
         for i, file_in_tree in enumerate(read_pipe_lines('git ls-tree -r {}'.format(ref))):
             m=treecmp.match(file_in_tree)
