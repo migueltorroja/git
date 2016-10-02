@@ -1307,9 +1307,17 @@ class P4Fsck(Command, P4UserMap):
             ref = args[0]
         log = extractLogMessageFromGitCommit(ref)
         settings = extractSettingsGitLog(log)
-        print settings 
+        print "Checking {}...@{}".format(settings['depot-paths'][0],settings['change']) 
         p4fstat_list = p4CmdList('fstat -Ol {}...@{}'.format(settings['depot-paths'][0],settings['change']))
+        if not isinstance(p4fstat_list,list or not isinstance(p4fstat_list[0],dict)):
+            die('Output error (p4 fstat command)')
         for p4fstat_file in p4fstat_list:
+            if 'p4ExitCode' in p4fstat_file or \
+            ('code' in p4fstat_file and p4fstat_file['code'] == 'error'):
+                err_text = 'P4 command error'
+                if 'data' in p4fstat_file:
+                    err_text = err_text+ ' error: {}'.format(p4fstat_file['data'])
+                die(err_text)
             if p4fstat_file.has_key('digest'):
                 p4_digest[p4fstat_file['depotFile']] =  p4fstat_file['digest']
         self.showHashProgress(0,len(p4_digest.keys()))
@@ -1331,7 +1339,7 @@ class P4Fsck(Command, P4UserMap):
         for k,v in p4_digest.iteritems():
             if git_digest.has_key(k):
                 if git_digest[k].lower() != v.lower():
-                    print 'mismatch: {} p4:{} git:{}'.format(k,v,git_digest[k]) 
+                    print 'mismatch: {} p4:{} git:{}\n'.format(k,v,git_digest[k]) 
 
         return True
 
