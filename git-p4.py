@@ -188,7 +188,7 @@ def get_md5_p4_safe_method(headType,depotFile,headChange,digest=None,**kargs):
 def get_md5_git_blob(blobhash):
     if verbose:
         sys.stderr.write('MD5 of git blob: %s\n' % str(blobhash))
-    c ='git cat-file blob {}'.format(blobhash)
+    c ='git show {}'.format(blobhash)
     p = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
     md5digest=get_md5_from_fobj(p.stdout)
     p.wait()
@@ -503,7 +503,7 @@ def isModeExec(mode):
 def isModeExecChanged(src_mode, dst_mode):
     return isModeExec(src_mode) != isModeExec(dst_mode)
 
-def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
+def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None,ignore_error=True):
 
     if isinstance(cmd,basestring):
         cmd = "-G " + cmd
@@ -550,7 +550,12 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
         entry = {}
         entry["p4ExitCode"] = exitCode
         result.append(entry)
-
+        if not ignore_error:
+            err_test = 'The P4 comand: "{}" failed'.format(cmd)
+            if 'code' in result[0] and result[0]['code'] == 'error':
+                if 'data' in result[0]:
+                    err_test += ': "{}"'.format(result[0]['data'])
+            die(err_test)
     return result
 
 def p4Cmd(cmd):
@@ -1324,38 +1329,60 @@ class P4Fsck(Command, P4UserMap):
         sys.stdout.write('\rHashing: (git:{:8},p4:{:8})'.format(ngitfile,np4files))
         sys.stdout.flush()
 
-    def fsckCommit(self,ref):
+    def fsckCommit(self,ref,prev_p4_digest=None,prev_git_digest=None,prevref=None):
         p4_digest={}
         git_digest={}
+        if not prev_p4_digest:
+            p4_digest={}
+        if not prev_git_digest:
+            git_digest={}
         log = extractLogMessageFromGitCommit(ref)
         settings = extractSettingsGitLog(log)
         print "Checking {}...@{}".format(settings['depot-paths'][0],settings['change']) 
-        p4fstat_list = p4CmdList('fstat -Ol {}...@{}'.format(settings['depot-paths'][0],settings['change']))
-        if not isinstance(p4fstat_list,list or not isinstance(p4fstat_list[0],dict)):
-            die('Output error (p4 fstat command)')
-        for i, p4fstat_file in enumerate(p4fstat_list):
-            if 'p4ExitCode' in p4fstat_file or \
-            ('code' in p4fstat_file and p4fstat_file['code'] == 'error'):
-                err_text = 'P4 command error'
-                if 'data' in p4fstat_file:
-                    err_text = err_text+ ' error: {}'.format(p4fstat_file['data'])
-                die(err_text)
-            if p4fstat_file['headAction'] == 'purge':
-                # The file was deleted from p4 server, ignoring it
-                continue
-            if p4fstat_file.has_key('digest'):
-                p4_digest[wildcard_decode(p4fstat_file['depotFile'])] = {'headType':p4fstat_file['headType'],
-                        'p4db-md5':p4fstat_file['digest'],
-                        'gitdb-md5':get_md5_p4_safe_method(**p4fstat_file)}
-            if i%20 == 19:
-                self.showHashProgress(0,len(p4_digest.keys()))
-        treecmp=re.compile('^([\d]{6})[\s]+([\S]+)[\s]+([0-9a-fA-F]+)[\s]+(.*)$')
-        for i, file_in_tree in enumerate(read_pipe_lines('git ls-tree -r {}'.format(ref))):
-            m=treecmp.match(file_in_tree)
-            if m: 
-                git_digest['{}{}'.format(settings['depot-paths'][0],m.group(4))]=get_md5_git_blob(m.group(3))
-            if i%20 == 19:
-                self.showHashProgress(len(git_digest.keys()),len(p4_digest.keys()))
+        if prevref:
+            p4_digest=prev_p4_digest
+            git_digest=prev_git_digest
+            log = extractLogMessageFromGitCommit(prevref)
+            prev_settings = extractSettingsGitLog(log)
+            for diffstat in p4CmdList('diff2  -q {}...@{} {}...@{}'.format(
+                prev_settings['depot-paths'][0],prev_settings['change'],
+                settings['depot-paths'][0],settings['change']),ignore_error=False):
+                print diffstat
+                if diffstat['status'] == 'left only':
+                    p4_digest.pop(wildcard_decode(diffstat['depotFile']))
+                else:
+                    entry = {'headType':diffstat['type2'],
+                            'depotFile':wildcard_decode(diffstat['depotFile2']),
+                            'headChange':settings['change']}
+                    print entry['depotFile']
+                    p4_digest[entry['depotFile']] = {'headType':entry['headType'],
+                            'gitdb-md5':get_md5_p4_safe_method(**entry)}
+            gitdiffcmp=re.compile('^([A-Z])[\s]+(.*)$')
+            for i, file_in_gitdiff in enumerate(read_pipe_lines('git diff --name-status {} {}'.format(prevref,ref))):
+                m = gitdiffcmp.match(file_in_gitdiff)
+                if m.group(1) == 'D': 
+                    git_digest.pop('{}{}'.format(settings['depot-paths'][0],m.group(2)))
+                else:
+                    git_digest['{}{}'.format(settings['depot-paths'][0],m.group(2))] = get_md5_git_blob('{}:{}'.format(ref,m.group(2)))
+        else:
+            p4fstat_list = p4CmdList('fstat -Ol {}...@{}'.format(settings['depot-paths'][0],settings['change']),ignore_error=False)
+            for i, p4fstat_file in enumerate(p4fstat_list):
+                if p4fstat_file['headAction'] == 'purge':
+                    # The file was deleted from p4 server, ignoring it
+                    continue
+                if p4fstat_file.has_key('digest'):
+                    p4_digest[wildcard_decode(p4fstat_file['depotFile'])] = {'headType':p4fstat_file['headType'],
+                            'p4db-md5':p4fstat_file['digest'],
+                            'gitdb-md5':get_md5_p4_safe_method(**p4fstat_file)}
+                if i%20 == 19:
+                    self.showHashProgress(0,len(p4_digest.keys()))
+            treecmp=re.compile('^([\d]{6})[\s]+([\S]+)[\s]+([0-9a-fA-F]+)[\s]+(.*)$')
+            for i, file_in_tree in enumerate(read_pipe_lines('git ls-tree -r {}'.format(ref))):
+                m=treecmp.match(file_in_tree)
+                if m: 
+                    git_digest['{}{}'.format(settings['depot-paths'][0],m.group(4))]=get_md5_git_blob(m.group(3))
+                if i%20 == 19:
+                    self.showHashProgress(len(git_digest.keys()),len(p4_digest.keys()))
         self.showHashProgress(len(git_digest.keys()),len(p4_digest.keys()))
         print
         l_p4 = p4_digest.copy()
@@ -1370,14 +1397,19 @@ class P4Fsck(Command, P4UserMap):
             print '- {}'.format(f)
         for f in gitset.difference(p4set):
             print '+ {}'.format(f)
-        return True
+        return [p4_digest,git_digest]
 
     def run(self, args):
         refs = 'HEAD'
+        prev_ref=None
+        prev_p4_digest = None
+        prev_git_digest = None
         if len(args) >0:
             refs = args[0]
-        for ref in read_pipe_lines('git rev-list {}'.format(refs)):
-            self.fsckCommit(ref)
+        for r in read_pipe_lines('git rev-list {}'.format(refs)):
+            ref=r.strip()
+            [prev_p4_digest, prev_git_digest] = self.fsckCommit(ref,prev_p4_digest, prev_git_digest,prev_ref)
+            prev_ref=ref
         return True
 
 class P4Submit(Command, P4UserMap):
