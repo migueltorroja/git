@@ -1364,7 +1364,12 @@ class P4Fsck(Command, P4UserMap):
             if git_digest.has_key(k):
                 if git_digest[k].lower() != v['gitdb-md5'].lower():
                     print 'mismatch: {} p4:{} git:{}'.format(k,v,git_digest[k]) 
-
+        p4set = set(p4_digest.keys()) 
+        gitset = set(git_digest.keys())
+        for f in p4set.difference(gitset):
+            print '- {}'.format(f)
+        for f in gitset.difference(p4set):
+            print '+ {}'.format(f)
         return True
 
 class P4Submit(Command, P4UserMap):
