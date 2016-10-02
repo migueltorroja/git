@@ -1325,91 +1325,93 @@ class P4Fsck(Command, P4UserMap):
         self.description = "Checks whether a particualr commit or range commits matches with P4 branch/changelist"
         self.usage += "[commit to check]"
 
-    def showHashProgress(self,ngitfile, np4files):
-        sys.stdout.write('\rHashing: (git:{:8},p4:{:8})'.format(ngitfile,np4files))
-        sys.stdout.flush()
 
-    def fsckCommit(self,ref,prev_p4_digest=None,prev_git_digest=None,prevref=None):
-        p4_digest={}
-        git_digest={}
-        if not prev_p4_digest:
-            p4_digest={}
-        if not prev_git_digest:
-            git_digest={}
-        log = extractLogMessageFromGitCommit(ref)
-        settings = extractSettingsGitLog(log)
-        print "Checking {}...@{}".format(settings['depot-paths'][0],settings['change']) 
-        if prevref:
-            p4_digest=prev_p4_digest
-            git_digest=prev_git_digest
-            log = extractLogMessageFromGitCommit(prevref)
-            prev_settings = extractSettingsGitLog(log)
-            for diffstat in p4CmdList('diff2  -q {}...@{} {}...@{}'.format(
-                prev_settings['depot-paths'][0],prev_settings['change'],
-                settings['depot-paths'][0],settings['change']),ignore_error=False):
-                print diffstat
-                if diffstat['status'] == 'left only':
-                    p4_digest.pop(wildcard_decode(diffstat['depotFile']))
-                else:
-                    entry = {'headType':diffstat['type2'],
-                            'depotFile':wildcard_decode(diffstat['depotFile2']),
-                            'headChange':settings['change']}
-                    print entry['depotFile']
-                    p4_digest[entry['depotFile']] = {'headType':entry['headType'],
-                            'gitdb-md5':get_md5_p4_safe_method(**entry)}
-            gitdiffcmp=re.compile('^([A-Z])[\s]+(.*)$')
-            for i, file_in_gitdiff in enumerate(read_pipe_lines('git diff --name-status {} {}'.format(prevref,ref))):
-                m = gitdiffcmp.match(file_in_gitdiff)
-                if m.group(1) == 'D': 
-                    git_digest.pop('{}{}'.format(settings['depot-paths'][0],m.group(2)))
-                else:
-                    git_digest['{}{}'.format(settings['depot-paths'][0],m.group(2))] = get_md5_git_blob('{}:{}'.format(ref,m.group(2)))
-        else:
-            p4fstat_list = p4CmdList('fstat -Ol {}...@{}'.format(settings['depot-paths'][0],settings['change']),ignore_error=False)
-            for i, p4fstat_file in enumerate(p4fstat_list):
-                if p4fstat_file['headAction'] == 'purge':
-                    # The file was deleted from p4 server, ignoring it
-                    continue
-                if p4fstat_file.has_key('digest'):
-                    p4_digest[wildcard_decode(p4fstat_file['depotFile'])] = {'headType':p4fstat_file['headType'],
-                            'p4db-md5':p4fstat_file['digest'],
-                            'gitdb-md5':get_md5_p4_safe_method(**p4fstat_file)}
-                if i%20 == 19:
-                    self.showHashProgress(0,len(p4_digest.keys()))
-            treecmp=re.compile('^([\d]{6})[\s]+([\S]+)[\s]+([0-9a-fA-F]+)[\s]+(.*)$')
-            for i, file_in_tree in enumerate(read_pipe_lines('git ls-tree -r {}'.format(ref))):
-                m=treecmp.match(file_in_tree)
-                if m: 
-                    git_digest['{}{}'.format(settings['depot-paths'][0],m.group(4))]=get_md5_git_blob(m.group(3))
-                if i%20 == 19:
-                    self.showHashProgress(len(git_digest.keys()),len(p4_digest.keys()))
-        self.showHashProgress(len(git_digest.keys()),len(p4_digest.keys()))
-        print
-        l_p4 = p4_digest.copy()
-        r_git = git_digest.copy()
-        for k,v in p4_digest.iteritems():
-            if git_digest.has_key(k):
-                if git_digest[k].lower() != v['gitdb-md5'].lower():
-                    print 'mismatch: {} p4:{} git:{}'.format(k,v,git_digest[k]) 
-        p4set = set(p4_digest.keys()) 
-        gitset = set(git_digest.keys())
-        for f in p4set.difference(gitset):
-            print '- {}'.format(f)
-        for f in gitset.difference(p4set):
-            print '+ {}'.format(f)
-        return [p4_digest,git_digest]
+    class diffP4vsGit:
+        def __init__(self):
+            self.p4_digest={}
+            self.git_digest={}
+            self.prevref=None
+
+        def showHashProgress(self,ngitfile, np4files):
+            sys.stdout.write('\rMD5 Hashing: (git:{:8},p4:{:8})'.format(ngitfile,np4files))
+            sys.stdout.flush()
+
+        def diff(self,ref):
+            diffmatches=True
+            log = extractLogMessageFromGitCommit(ref)
+            settings = extractSettingsGitLog(log)
+            print "Checking {}...@{}".format(settings['depot-paths'][0],settings['change']) 
+            if self.prevref:
+                log = extractLogMessageFromGitCommit(self.prevref)
+                prev_settings = extractSettingsGitLog(log)
+                for diffstat in p4CmdList('diff2  -q {}...@{} {}...@{}'.format(
+                    prev_settings['depot-paths'][0],prev_settings['change'],
+                    settings['depot-paths'][0],settings['change']),ignore_error=False):
+                    if not diffstat.has_key('status'):
+                        continue
+                    if diffstat['status'] == 'left only':
+                        self.p4_digest.pop(wildcard_decode(diffstat['depotFile']))
+                    else:
+                        entry = {'headType':diffstat['type2'],
+                                'depotFile':wildcard_decode(diffstat['depotFile2']),
+                                'headChange':settings['change']}
+                        self.p4_digest[entry['depotFile']] = {'headType':entry['headType'],
+                                'gitdb-md5':get_md5_p4_safe_method(**entry)}
+                gitdiffcmp=re.compile('^([A-Z])[\s]+(.*)$')
+                for i, file_in_gitdiff in enumerate(read_pipe_lines('git diff --name-status {} {}'.format(self.prevref,ref))):
+                    m = gitdiffcmp.match(file_in_gitdiff)
+                    if m.group(1) == 'D': 
+                        self.git_digest.pop('{}{}'.format(settings['depot-paths'][0],m.group(2)))
+                    else:
+                        self.git_digest['{}{}'.format(settings['depot-paths'][0],m.group(2))] = get_md5_git_blob('{}:{}'.format(ref,m.group(2)))
+            else:
+                p4fstat_list = p4CmdList('fstat -Ol {}...@{}'.format(settings['depot-paths'][0],settings['change']),ignore_error=False)
+                for i, p4fstat_file in enumerate(p4fstat_list):
+                    if p4fstat_file['headAction'] == 'purge':
+                        # The file was deleted from p4 server, ignoring it
+                        continue
+                    if p4fstat_file.has_key('digest'):
+                        self.p4_digest[wildcard_decode(p4fstat_file['depotFile'])] = {'headType':p4fstat_file['headType'],
+                                'p4db-md5':p4fstat_file['digest'],
+                                'gitdb-md5':get_md5_p4_safe_method(**p4fstat_file)}
+                    if i%20 == 19:
+                        self.showHashProgress(0,len(self.p4_digest.keys()))
+                treecmp=re.compile('^([\d]{6})[\s]+([\S]+)[\s]+([0-9a-fA-F]+)[\s]+(.*)$')
+                for i, file_in_tree in enumerate(read_pipe_lines('git ls-tree -r {}'.format(ref))):
+                    m=treecmp.match(file_in_tree)
+                    if m: 
+                        self.git_digest['{}{}'.format(settings['depot-paths'][0],m.group(4))]=get_md5_git_blob(m.group(3))
+                    if i%20 == 19:
+                        self.showHashProgress(len(self.git_digest.keys()),len(self.p4_digest.keys()))
+            self.showHashProgress(len(self.git_digest.keys()),len(self.p4_digest.keys()))
+            print
+            l_p4 = self.p4_digest.copy()
+            r_git = self.git_digest.copy()
+            for k,v in self.p4_digest.iteritems():
+                if self.git_digest.has_key(k):
+                    if self.git_digest[k].lower() != v['gitdb-md5'].lower():
+                        print 'mismatch: {} p4:{} git:{}'.format(k,v,self.git_digest[k]) 
+                        diffmatches=False
+            p4set = set(self.p4_digest.keys()) 
+            gitset = set(self.git_digest.keys())
+            for f in p4set.difference(gitset):
+                print '- {}'.format(f)
+                diffmatches=False
+            for f in gitset.difference(p4set):
+                print '+ {}'.format(f)
+                diffmatches=False
+            self.prevref=ref
+            return diffmatches
 
     def run(self, args):
         refs = 'HEAD'
-        prev_ref=None
-        prev_p4_digest = None
-        prev_git_digest = None
+        gitp4diff = P4Fsck.diffP4vsGit()
         if len(args) >0:
             refs = args[0]
         for r in read_pipe_lines('git rev-list {}'.format(refs)):
             ref=r.strip()
-            [prev_p4_digest, prev_git_digest] = self.fsckCommit(ref,prev_p4_digest, prev_git_digest,prev_ref)
-            prev_ref=ref
+            if not gitp4diff.diff(ref):
+                print "   git ref: {} differs with respect P4".format(ref[0:8])
         return True
 
 class P4Submit(Command, P4UserMap):
