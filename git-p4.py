@@ -189,7 +189,7 @@ def get_md5_from_sha1(sha1dict):
     md5dict={}
     c ='git cat-file --batch'
     p = subprocess.Popen(c, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
-    gitcat_compile=re.compile("([\S]+)[\s]+([\S]+)[\s]+([\S]+)[\s]+.*")
+    gitcat_compile=re.compile("([\S]+)[\s]+([\S]+)[\s]+([\S]+)[\s]+(.*)$")
     #for k, ref_sha1 in sha1dict.iteritems():
     #    p.stdin.write("{}\n".format(ref_sha1))
     i=0
@@ -207,8 +207,6 @@ def get_md5_from_sha1(sha1dict):
                 break
         if not m:
             die("Syntax error")
-        if m.group(1).lower() <> ref_sha1.lower():
-            die("SHA1 mismatch {} != {}".format(m.group(1),ref_sha1))
         filesize=int(m.group(3))
         nread=0
         while nread <filesize:
