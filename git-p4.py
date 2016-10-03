@@ -185,14 +185,49 @@ def get_md5_p4_safe_method(headType,depotFile,headChange,digest=None,**kargs):
         md5digest_out = digest
     return md5digest_out
 
-def get_md5_git_blob(blobhash):
-    if verbose:
-        sys.stderr.write('MD5 of git blob: %s\n' % str(blobhash))
-    c ='git show {}'.format(blobhash)
-    p = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
-    md5digest=get_md5_from_fobj(p.stdout)
+def get_md5_from_sha1(sha1dict):
+    md5dict={}
+    c ='git cat-file --batch'
+    p = subprocess.Popen(c, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
+    gitcat_compile=re.compile("([\S]+)[\s]+([\S]+)[\s]+([\S]+)[\s]+.*")
+    #for k, ref_sha1 in sha1dict.iteritems():
+    #    p.stdin.write("{}\n".format(ref_sha1))
+    i=0
+    for k, ref_sha1 in sha1dict.iteritems():
+        hobj=hashlib.md5()
+        #if verbose:
+        #    sys.stderr.write('MD5 of git blob: %s\n' % str(blobhash))
+        p.stdin.write("{}\n".format(ref_sha1))
+        l=[]
+        m=None
+        for nt in range(2):
+            l = p.stdout.readline()
+            m = gitcat_compile.match(l)
+            if m:
+                break
+        if not m:
+            die("Syntax error")
+        if m.group(1).lower() <> ref_sha1.lower():
+            die("SHA1 mismatch {} != {}".format(m.group(1),ref_sha1))
+        filesize=int(m.group(3))
+        nread=0
+        while nread <filesize:
+            buf = p.stdout.read(min(filesize-nread,8192))
+            nread += len(buf)
+            if buf:
+                hobj.update(buf)
+            else:
+                break
+        md5dict[k] = hobj.hexdigest()
+        i += 1
+        if i%20 == 0:
+            sys.stdout.write("\r{}/{}".format(len(md5dict.keys()),len(sha1dict.keys())))
+            sys.stdout.flush()
+    p.stdin.close()
     p.wait()
-    return md5digest 
+    #if p.returncode != 0 and not ignore_error:
+    #    die('Command failed: %s\nError: %s' % (str(c), p.stderr))
+    return md5dict
 
 def p4_read_pipe(c, ignore_error=False):
     real_cmd = p4_build_cmd(c)
@@ -1358,12 +1393,15 @@ class P4Fsck(Command, P4UserMap):
                         self.p4_digest[entry['depotFile']] = {'headType':entry['headType'],
                                 'gitdb-md5':get_md5_p4_safe_method(**entry)}
                 gitdiffcmp=re.compile('^([A-Z])[\s]+(.*)$')
+                git_files_to_update={}
                 for i, file_in_gitdiff in enumerate(read_pipe_lines('git diff --name-status {} {}'.format(self.prevref,ref))):
                     m = gitdiffcmp.match(file_in_gitdiff)
                     if m.group(1) == 'D': 
                         self.git_digest.pop('{}{}'.format(settings['depot-paths'][0],m.group(2)))
                     else:
-                        self.git_digest['{}{}'.format(settings['depot-paths'][0],m.group(2))] = get_md5_git_blob('{}:{}'.format(ref,m.group(2)))
+                        git_files_to_update['{}{}'.format(settings['depot-paths'][0],m.group(2))] = '{}:{}'.format(ref,m.group(2))
+                for k, v in get_md5_from_sha1(git_files_to_update).iteritems():
+                    self.git_digest[k] = v 
             else:
                 p4fstat_list = p4CmdList('fstat -Ol {}...@{}'.format(settings['depot-paths'][0],settings['change']),ignore_error=False)
                 for i, p4fstat_file in enumerate(p4fstat_list):
@@ -1377,12 +1415,15 @@ class P4Fsck(Command, P4UserMap):
                     if i%20 == 19:
                         self.showHashProgress(0,len(self.p4_digest.keys()))
                 treecmp=re.compile('^([\d]{6})[\s]+([\S]+)[\s]+([0-9a-fA-F]+)[\s]+(.*)$')
+                git_files_to_update={}
                 for i, file_in_tree in enumerate(read_pipe_lines('git ls-tree -r {}'.format(ref))):
                     m=treecmp.match(file_in_tree)
                     if m: 
-                        self.git_digest['{}{}'.format(settings['depot-paths'][0],m.group(4))]=get_md5_git_blob(m.group(3))
+                        git_files_to_update['{}{}'.format(settings['depot-paths'][0],m.group(4))] = m.group(3)
                     if i%20 == 19:
                         self.showHashProgress(len(self.git_digest.keys()),len(self.p4_digest.keys()))
+                for k, v in get_md5_from_sha1(git_files_to_update).iteritems():
+                    self.git_digest[k]=v
             self.showHashProgress(len(self.git_digest.keys()),len(self.p4_digest.keys()))
             print
             l_p4 = self.p4_digest.copy()
