@@ -177,7 +177,7 @@ def get_md5_p4_safe_method(headType,depotFile,headChange,digest=None,**kargs):
     elif 'utf16' == p4type: 
         recompute_hash = True
     if recompute_hash:
-        c ='p4 print -k -q -o - {}@{}'.format(depotFile,headChange)
+        c ='p4 print -k -q -o - "{}@{}"'.format(depotFile,headChange)
         p = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
         md5digest_out = get_md5_from_fobj(p.stdout)
         p.wait()
