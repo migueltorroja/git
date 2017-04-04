@@ -1896,6 +1896,32 @@ class View(object):
         die( "Error: %s is not found in client spec path" % depot_path )
         return ""
 
+class P4Fetch(Command, P4UserMap):
+    def __init__(self):
+        Command.__init__(self)
+        P4UserMap.__init__(self)
+        self.options = []
+        self.description = ("Updates all the git branches that hold P4 imports  ")
+        self.verbose = False
+    def run(self, args):
+        cmdline = "git rev-parse --symbolic "
+        cmdline += " --remotes"
+        p4_branches = []
+
+        for line in read_pipe_lines(cmdline):
+            line = line.strip()
+
+            if not line.startswith('p4/') or line == "p4/HEAD":
+                continue
+            p4_branches.append(line[3:])
+
+        for branch in p4_branches:  
+            sync = P4Sync()
+            sync.branch = branch
+            if not sync.run([]):
+                return False
+        return True
+
 class P4Sync(Command, P4UserMap):
     delete_actions = ( "delete", "move/delete", "purge" )
 
@@ -3234,7 +3260,8 @@ commands = {
     "rebase" : P4Rebase,
     "clone" : P4Clone,
     "rollback" : P4RollBack,
-    "branches" : P4Branches
+    "branches" : P4Branches,
+    "fetch" : P4Fetch
 }
 
 
