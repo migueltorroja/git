@@ -134,8 +134,9 @@ def read_pipe(c, ignore_error=False):
     p = subprocess.Popen(c, stdout=subprocess.PIPE, shell=expand)
     pipe = p.stdout
     val = pipe.read()
-    if p.wait() and not ignore_error:
-        die('Command failed: %s' % str(c))
+    retcode = p.wait()
+    if retcode and not ignore_error:
+        raise CalledProcessError(retcode, c)
 
     return val
 
@@ -1896,6 +1897,46 @@ class View(object):
         die( "Error: %s is not found in client spec path" % depot_path )
         return ""
 
+class P4Pull(Command, P4UserMap):
+    def __init__(self):
+        Command.__init__(self)
+        P4UserMap.__init__(self)
+        self.options = []
+        self.description = ("fetch and update loca branches with p4 tips")
+        self.verbose = False
+    def run(self, args):
+        cmdline = "git rev-parse --symbolic --branches "
+        git_branches = []
+
+        for line in read_pipe_lines(cmdline):
+            line = line.strip()
+
+            git_commit = read_pipe(["git", "rev-parse",line])
+            git_commit = git_commit.strip()
+            p4_branches = read_pipe_lines(["git", "branch", "--contain",
+                                git_commit, "--remotes", "p4/*"])
+            if len(p4_branches) == 0:
+                print "The branch {} it's not in any p4 remote".format(line)
+                continue
+            for l in p4_branches:
+                p4_branch = l.strip()
+                if "HEAD" not in l:
+                    break
+            p4_commit = read_pipe(["git", "rev-parse",p4_branch])
+            p4_commit = p4_commit.strip()
+            p4_branch_settings = extractSettingsGitLog(extractLogMessageFromGitCommit(p4_branch))
+            git_branch_settings = extractSettingsGitLog(extractLogMessageFromGitCommit(git_commit))
+            if git_branch_settings.has_key('depot-paths'):
+                if (p4_branch_settings['depot-paths'] == git_branch_settings['depot-paths']) and \
+                    (p4_commit != git_commit):
+                    print "Updating local branch {} with p4 branch {}".format(line,p4_branch)
+                    git_cmd = ["git","fetch",".", "{}:{}".format(p4_branch,line)]
+                    retcode = subprocess.call(git_cmd) 
+                    if retcode:
+                        raise CalledProcessError(retcode, git_cmd)
+            else:
+                print "The branch {} is not a p4 branch".format(line) 
+        return True
 class P4Fetch(Command, P4UserMap):
     def __init__(self):
         Command.__init__(self)
@@ -3261,7 +3302,8 @@ commands = {
     "clone" : P4Clone,
     "rollback" : P4RollBack,
     "branches" : P4Branches,
-    "fetch" : P4Fetch
+    "fetch" : P4Fetch,
+    "pull": P4Pull
 }
 
 
