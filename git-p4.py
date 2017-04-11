@@ -1976,13 +1976,13 @@ class P4Fetch(Command, P4UserMap):
             head_after_update = head_after_update.strip()
             if head_before_update != head_after_update:
                 if git_local_sha1_to_branch.has_key(head_before_update):
-                    local_branch = git_local_sha1_to_branch[head_before_update]
-                    p4_branch = "p4/"+branch
-                    print "Updating local branch {} with p4 branch {}".format(local_branch,p4_branch)
-                    git_cmd = ["git","fetch",".", "{}:{}".format(p4_branch,local_branch)]
-                    retcode = subprocess.call(git_cmd) 
-                    if retcode:
-                        raise CalledProcessError(retcode, git_cmd)
+                    for local_branch in git_local_sha1_to_branch[head_before_update]:
+                        p4_branch = "p4/"+branch
+                        print "Updating local branch {} with p4 branch {}".format(local_branch,p4_branch)
+                        git_cmd = ["git","fetch",".", "{}:{}".format(p4_branch,local_branch)]
+                        retcode = subprocess.call(git_cmd) 
+                        if retcode:
+                            raise CalledProcessError(retcode, git_cmd)
         return True
 
 class P4Sync(Command, P4UserMap):
