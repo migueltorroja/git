@@ -1945,6 +1945,15 @@ class P4Fetch(Command, P4UserMap):
         self.description = ("Updates all the git branches that hold P4 imports  ")
         self.verbose = False
     def run(self, args):
+        cmdline = "git rev-parse --symbolic --branches "
+        git_local_sha1_to_branch = {} 
+        for line in read_pipe_lines(cmdline):
+            line = line.strip()
+            git_commit = read_pipe(["git","rev-parse",line])
+            git_commit = git_commit.strip()
+            if not git_local_sha1_to_branch.has_key(git_commit):
+                git_local_sha1_to_branch[git_commit] = []
+            git_local_sha1_to_branch[git_commit].append(line)
         cmdline = "git rev-parse --symbolic "
         cmdline += " --remotes"
         p4_branches = []
@@ -1957,10 +1966,23 @@ class P4Fetch(Command, P4UserMap):
             p4_branches.append(line[3:])
 
         for branch in p4_branches:  
+            head_before_update = read_pipe(["git","rev-parse","p4/"+branch])
+            head_before_update = head_before_update.strip()
             sync = P4Sync()
             sync.branch = branch
             if not sync.run([]):
                 return False
+            head_after_update = read_pipe(["git","rev-parse","p4/"+branch])
+            head_after_update = head_after_update.strip()
+            if head_before_update != head_after_update:
+                if git_local_sha1_to_branch.has_key(head_before_update):
+                    local_branch = git_local_sha1_to_branch[head_before_update]
+                    p4_branch = "p4/"+branch
+                    print "Updating local branch {} with p4 branch {}".format(local_branch,p4_branch)
+                    git_cmd = ["git","fetch",".", "{}:{}".format(p4_branch,local_branch)]
+                    retcode = subprocess.call(git_cmd) 
+                    if retcode:
+                        raise CalledProcessError(retcode, git_cmd)
         return True
 
 class P4Sync(Command, P4UserMap):
