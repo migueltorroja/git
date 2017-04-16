@@ -280,7 +280,7 @@ static int diff_type_cmp(const void *a_, const void *b_)
 	 * appear in the output before it is renamed (e.g., when a file
 	 * was copied and renamed in the same commit).
 	 */
-	return (a->status == 'R') - (b->status == 'R');
+	return (a->status == DIFF_STATUS_RENAMED) - (b->status == DIFF_STATUS_RENAMED);
 }
 
 static void print_path_1(const char *path)
