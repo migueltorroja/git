@@ -419,6 +419,31 @@ test_expect_success 'directory becomes symlink'        '
 	(cd result && git show master:foo)
 '
 
+test_expect_success 'file becomes directory'  '
+	git init filetodir_orig &&
+	git init --bare filetodir_replica.git &&
+	(
+		cd filetodir_orig &&
+		echo foo > filethendir &&
+		git add filethendir &&
+		test_tick &&
+		git commit -mfile &&
+		git rm filethendir &&
+		mkdir filethendir &&
+		echo bar > filethendir/a &&
+		git add filethendir/a &&
+		test_tick &&
+		git commit -mdir
+	) &&
+	git --git-dir=filetodir_orig/.git fast-export master  |
+		git --git-dir=filetodir_replica.git/ fast-import &&
+	(
+		ORIG=$(git --git-dir=filetodir_orig/.git rev-parse --verify master) &&
+		REPLICA=$(git --git-dir=filetodir_replica.git rev-parse --verify master) &&
+		test $ORIG = $REPLICA
+	)
+'
+
 test_expect_success 'fast-export quotes pathnames' '
 	git init crazy-paths &&
 	(cd crazy-paths &&

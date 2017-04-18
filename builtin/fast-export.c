@@ -260,26 +260,19 @@ static void export_blob(const struct object_id *oid)
 		free(buf);
 }
 
-static int depth_first(const void *a_, const void *b_)
+/*
+ * Compares two diff types to order based on output priorities.
+ */
+static int diff_type_cmp(const void *a_, const void *b_)
 {
 	const struct diff_filepair *a = *((const struct diff_filepair **)a_);
 	const struct diff_filepair *b = *((const struct diff_filepair **)b_);
-	const char *name_a, *name_b;
-	int len_a, len_b, len;
 	int cmp;
 
-	name_a = a->one ? a->one->path : a->two->path;
-	name_b = b->one ? b->one->path : b->two->path;
-
-	len_a = strlen(name_a);
-	len_b = strlen(name_b);
-	len = (len_a < len_b) ? len_a : len_b;
-
-	/* strcmp will sort 'd' before 'd/e', we want 'd/e' before 'd' */
-	cmp = memcmp(name_a, name_b, len);
-	if (cmp)
-		return cmp;
-	cmp = len_b - len_a;
+	/*
+	 * Move Delete entries first so that an addition is always reported after
+	 */
+	cmp = (b->status == DIFF_STATUS_DELETED) - (a->status == DIFF_STATUS_DELETED);
 	if (cmp)
 		return cmp;
 	/*
@@ -287,7 +280,12 @@ static int depth_first(const void *a_, const void *b_)
 	 * appear in the output before it is renamed (e.g., when a file
 	 * was copied and renamed in the same commit).
 	 */
-	return (a->status == 'R') - (b->status == 'R');
+	cmp = (a->status == DIFF_STATUS_RENAMED) - (b->status == DIFF_STATUS_RENAMED);
+	if (cmp)
+		return cmp;
+
+	/* For the remaining cases we keep the original ordering comparing the pointers */
+	return (a-b);
 }
 
 static void print_path_1(const char *path)
@@ -347,7 +345,7 @@ static void show_filemodify(struct diff_queue_struct *q,
 	 * Handle files below a directory first, in case they are all deleted
 	 * and the directory changes to a file or symlink.
 	 */
-	QSORT(q->queue, q->nr, depth_first);
+	QSORT(q->queue, q->nr, diff_type_cmp);
 
 	for (i = 0; i < q->nr; i++) {
 		struct diff_filespec *ospec = q->queue[i]->one;
