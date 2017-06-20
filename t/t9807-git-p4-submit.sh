@@ -409,6 +409,34 @@ test_expect_success 'description with Jobs section and bogus following text' '
 	)
 '
 
+test_expect_success 'description with extra lines from verbose p4 trigger' '
+	test_when_finished cleanup_git &&
+	git p4 clone --dest="$git" //depot &&
+	(
+		p4 triggers -i <<-EOF
+		Triggers:
+		        p4triggertest-command command pre-user-change "echo verbose trigger"
+		EOF
+	) &&
+	(
+		cd "$git" &&
+		git config git-p4.skipSubmitEdit true &&
+		echo file20 >file20 &&
+		git add file20 &&
+		git commit -m file20 &&
+		git p4 submit
+	) &&
+	(
+		p4 triggers -i <<-EOF
+		Triggers:
+		EOF
+	) &&
+	(
+		cd "$cli" &&
+		test_path_is_file file20
+	)
+'
+
 test_expect_success 'submit --prepare-p4-only' '
 	test_when_finished cleanup_git &&
 	git p4 clone --dest="$git" //depot &&
