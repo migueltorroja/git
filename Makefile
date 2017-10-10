@@ -628,7 +628,7 @@ SCRIPT_PERL += git-cvsserver.perl
 SCRIPT_PERL += git-send-email.perl
 SCRIPT_PERL += git-svn.perl
 
-SCRIPT_PYTHON += git-p4.py
+#SCRIPT_PYTHON += git-p4.py
 
 # Generated files for scripts
 SCRIPT_SH_GEN = $(patsubst %.sh,%,$(SCRIPT_SH))
@@ -689,6 +689,7 @@ PROGRAM_OBJS += imap-send.o
 PROGRAM_OBJS += sh-i18n--envsubst.o
 PROGRAM_OBJS += shell.o
 PROGRAM_OBJS += remote-testsvn.o
+PROGRAM_OBJS += p4.o
 
 # Binary suffix, set to .exe for Windows builds
 X =
