@@ -239,21 +239,6 @@ static void py_dict_copy(struct hashmap *dst, struct hashmap *src)
 	}
 }
 
-int chdir_pwd(const char *newdir, int is_client_path)
-{
-	int ret;
-	ret = chdir(newdir);
-	if (!is_client_path) {
-		struct strbuf wd = STRBUF_INIT;
-		strbuf_getcwd(&wd);
-		setenv("PWD", wd.buf, 1);
-		strbuf_release(&wd);
-	}
-	else
-		setenv("PWD",newdir,1);
-	return ret;
-} 
-
 /* function that runs the p4 with the python marshal output format
  * Each new py dict created is passed to a callback
  * it returns the exit status of the p4 command process 
@@ -1684,7 +1669,6 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	struct hashmap map;
 	struct strbuf strb_master = STRBUF_INIT;
 	struct strbuf commits = STRBUF_INIT;
-	struct strbuf old_working_dir = STRBUF_INIT;
 	const char *origin = NULL;
 	const char *branch = NULL;
 	struct option options[] = {
@@ -1773,8 +1757,6 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	fprintf(stdout, "Perforce checkout for depot path %s located at %s\n",
 			p4submit_options.depot_path.buf,
 			p4submit_options.client_path.buf);
-	if (strbuf_getcwd(&old_working_dir) != 0)
-		die("Failed to get current working tree\n");
 	if (!p4submit_options.dry_run) {
 		fprintf(stdout, "Synchronizing p4 checkout...\n");
 		p4_sync_dir(p4submit_options.client_path.buf);
@@ -1819,7 +1801,6 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		}
 		strbuf_list_free(strb_list);
 	}
-	strbuf_release(&old_working_dir);
 	strbuf_release(&strb_master);
 	strbuf_release(&commits);
 }
