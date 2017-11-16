@@ -1593,6 +1593,20 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	strbuf_release(&src_path);
 }
 
+int p4_local_unlink(const char *cli_path, const char *local_path)
+{
+	struct strbuf unpath = STRBUF_INIT;
+	int ret;
+	strbuf_addstr(&unpath, cli_path);
+	if (unpath.len && (!is_dir_sep(unpath.buf[unpath.len-1])))
+		strbuf_addch(&unpath, '/');
+	strbuf_addstr(&unpath, local_path);
+	ret = unlink(unpath.buf);
+	strbuf_release(&unpath);
+	return ret;
+}
+
+
 int p4submit_apply(const char *commit_id)
 {
 	struct strbuf user_id = STRBUF_INIT;
@@ -1602,6 +1616,7 @@ int p4submit_apply(const char *commit_id)
 	const char *cli_path = p4submit_options.client_path.buf;
 	struct hashmap_iter hm_iter;
 	struct child_process p4_submit = CHILD_PROCESS_INIT;
+	int clean_opened_files = 1;
 	keyval_t *kw;
 	p4_files_modified_init(&files_to_update);
 	argv_array_push(&gitargs, "diff-tree");
@@ -1646,6 +1661,7 @@ int p4submit_apply(const char *commit_id)
 	else {
 		argv_array_push(&gitargs, "submit");
 		argv_array_push(&gitargs, "-i");
+		clean_opened_files = 0;
 	}
 	p4_submit.in = -1;
 	p4_submit.argv = gitargs.argv;
@@ -1655,7 +1671,22 @@ int p4submit_apply(const char *commit_id)
 	FILE *fp = fdopen(p4_submit.in, "w");
 	dump_p4_log(fp, commit_id, p4submit_options.update_shelve_cl);
 	fclose(fp);
-	finish_command(&p4_submit);
+	if (finish_command(&p4_submit)) {
+		LOG_GITP4_CRITICAL("Failed to submit change\n");
+		clean_opened_files = 1;
+	}
+	if (clean_opened_files) {
+		for_each_string_list_item(item,&files_to_update.edited) {
+			p4_revert(cli_path, item->string);
+		}
+		for_each_string_list_item(item,&files_to_update.deleted) {
+			p4_revert(cli_path, item->string);
+		}
+		for_each_string_list_item(item,&files_to_update.added) {
+			p4_revert(cli_path, item->string);
+			p4_local_unlink(cli_path, item->string);
+		}
+	}
 	argv_array_clear(&gitargs);
 leave:
 	strbuf_release(&user_id);
