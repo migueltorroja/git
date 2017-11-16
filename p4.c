@@ -626,12 +626,9 @@ int p4_branches_in_git(struct hashmap *map, int local_branches)
 
 struct extract_log_message_t {
 	int found_title;
-	int in_job_field;
 	struct strbuf *logmessage;
-	struct strbuf *jobs;
 };
 
-#define EXTRACTLOG_INIT {0,0,NULL,NULL}
 
 static void extract_log_message_and_job_cb(struct strbuf *sbline, void *arg)
 {
@@ -641,27 +638,16 @@ static void extract_log_message_and_job_cb(struct strbuf *sbline, void *arg)
 			logst->found_title = 1;
 		return;
 	}
-	if (logst->jobs && starts_with(sbline->buf,"Jobs:"))
-		logst->in_job_field = 1;
-	if (logst->in_job_field && logst->jobs)
-		strbuf_addbuf(logst->jobs, sbline);
-	else
-		strbuf_addbuf(logst->logmessage, sbline);
-}
-
-void extract_log_message_and_jobs(const char *commit, struct strbuf *sb, struct strbuf *jobs)
-{
-	const char *cmd_list[] = {"cat-file", "commit", commit, NULL};
-	struct extract_log_message_t logst = EXTRACTLOG_INIT;
-	logst.logmessage = sb;
-	logst.jobs = jobs;
-	if (git_cmd_read_pipe_line(cmd_list, extract_log_message_and_job_cb, &logst) != 0)
-		die("Error extract log from commit %s", commit);
+	strbuf_addbuf(logst->logmessage, sbline);
 }
 
 void extract_log_message(const char *commit, struct strbuf *sb)
 {
-	extract_log_message_and_jobs(commit, sb, NULL);
+	const char *cmd_list[] = {"cat-file", "commit", commit, NULL};
+	struct extract_log_message_t logst = {0, NULL};
+	logst.logmessage = sb;
+	if (git_cmd_read_pipe_line(cmd_list, extract_log_message_and_job_cb, &logst) != 0)
+		die("Error extract log from commit %s", commit);
 }
 
 int p4_local_branches_in_git(struct hashmap *map)
@@ -1482,7 +1468,7 @@ static void prepare_p4submit_template(unsigned int changelist, struct strbuf *te
 }
 
 void prepare_log_message(struct strbuf *out,
-		struct strbuf *template, struct strbuf *message, struct strbuf *jobs)
+		struct strbuf *template, struct strbuf *message)
 {
 	struct string_list template_lines = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
@@ -1495,12 +1481,8 @@ void prepare_log_message(struct strbuf *out,
 			continue;
 		}
 		if (in_description_section) {
-			if (starts_with(item->string, "Files:") ||
-					starts_with(item->string, "Jobs:")) {
+			if (starts_with(item->string, "Files:"))
 				in_description_section = 0;
-				if (jobs)
-					strbuf_addf(out, "%s\n", jobs->buf);
-			}
 			else
 				continue;
 		}
@@ -1526,17 +1508,14 @@ void prepare_log_message(struct strbuf *out,
 void dump_p4_log(FILE *fp, const char *commit_id, unsigned int changelist)
 {
 	struct strbuf description = STRBUF_INIT;
-	struct strbuf jobs = STRBUF_INIT;
 	struct strbuf template = STRBUF_INIT;
 	struct strbuf outlog = STRBUF_INIT;
-	extract_log_message_and_jobs(commit_id, &description, &jobs);
+	extract_log_message(commit_id, &description);
 	strbuf_trim(&description);
-	strbuf_trim(&jobs);
 	prepare_p4submit_template(changelist, &template);
-	prepare_log_message(&outlog, &template, &description, &jobs);
+	prepare_log_message(&outlog, &template, &description);
 	strbuf_write(&outlog, fp);
 	strbuf_release(&description);
-	strbuf_release(&jobs);
 	strbuf_release(&template);
 	strbuf_release(&outlog);
 }
