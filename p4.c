@@ -193,10 +193,17 @@ static void py_dict_set_key_val(struct hashmap *map, const char *key, const char
 	py_dict_put_kw(map,kw);
 }
 
-static const char *py_dict_get_value(struct hashmap *map, const char *str)
+static const keyval_t *py_dict_get_kw(struct hashmap *map, const char *str)
 {
 	keyval_t *kw;
 	kw = hashmap_get_from_hash(map, strhash(str), str);
+	return kw;
+}
+
+static const char *py_dict_get_value(struct hashmap *map, const char *str)
+{
+	const keyval_t *kw;
+	kw = py_dict_get_kw(map,str);
 	if (NULL == kw)
 		return NULL;
 	return kw->val.buf;
@@ -1368,7 +1375,79 @@ static int is_git_mode_exec_changed(const char *src_mode, const char *dst_mode)
 	return (ends_with(src_mode,"755") != ends_with(dst_mode,"755"));
 }
 
-static void prepare_p4submit_template_cb(struct hashmap *map, void *arg)
+static void py_dict_remove_non_depot_files(struct hashmap *map, const char *depot_path)
+{
+	struct hashmap_iter hm_iter;
+	const keyval_t *kw;
+	struct hashmap maptmp;
+	py_dict_init(&maptmp);
+	hashmap_iter_init(map, &hm_iter);
+	while ((kw = hashmap_iter_next(&hm_iter))) {
+		if (starts_with(kw->key.buf, "File") && !starts_with(kw->val.buf, depot_path)) {
+			continue;
+		}
+		py_dict_set_key_val(&maptmp, kw->key.buf, kw->val.buf);
+	}
+	SWAP(*map, maptmp);
+	py_dict_destroy(&maptmp);
+}
+
+static void strbuf_add_p4change_multiple_fields(struct strbuf *out, struct hashmap *map, const char *prefix_field, const char *output_field_name)
+{
+	struct hashmap_iter hm_iter;
+	const keyval_t *kw;
+	hashmap_iter_init(map, &hm_iter);
+	strbuf_addf(out, "\n%s:\n", output_field_name);
+	while ((kw = hashmap_iter_next(&hm_iter))) {
+		if (!starts_with(kw->key.buf, prefix_field))
+			continue;
+		strbuf_addf(out, "\t%s\n", kw->val.buf);
+	}
+}
+
+static void strbuf_add_p4change_field(struct strbuf *out, struct hashmap *map, const char *field)
+{
+	const keyval_t *kw;
+	struct string_list field_line_list = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	kw = py_dict_get_kw(map, field);
+	if (!kw)
+		return;
+	string_list_split(&field_line_list, kw->val.buf, '\n', -1);
+	strbuf_addf(out, "\n%s:", field);
+	if (((kw->val.len + strlen(field)) > 78) || (field_line_list.nr > 1))
+		strbuf_addf(out, "\n");
+	for_each_string_list_item(item, &field_line_list)
+		strbuf_addf(out, "\t%s\n", item->string);
+	string_list_clear(&field_line_list, 0);
+}
+
+static void strbuf_add_p4change(struct strbuf *out, struct hashmap *map)
+{
+	strbuf_addstr(out, "# A Perforce Change Specification.\n");
+	strbuf_addstr(out, "#\n");
+	strbuf_addstr(out, "#  Change:      The change number. 'new' on a new changelist.\n");
+	strbuf_addstr(out, "#  Date:        The date this specification was last modified.\n");
+	strbuf_addstr(out, "#  Client:      The client on which the changelist was created.  Read-only.\n");
+	strbuf_addstr(out, "#  User:        The user who created the changelist.\n");
+	strbuf_addstr(out, "#  Status:      Either 'pending' or 'submitted'. Read-only.\n");
+	strbuf_addstr(out, "#  Type:        Either 'public' or 'restricted'. Default is 'public'.\n");
+	strbuf_addstr(out, "#  Description: Comments about the changelist.  Required.\n");
+	strbuf_addstr(out, "#  Jobs:        What opened jobs are to be closed by this changelist.\n");
+	strbuf_addstr(out, "#               You may delete jobs from this list.  (New changelists only.)\n");
+	strbuf_addstr(out, "#  Files:       What opened files from the default changelist are to be added\n");
+	strbuf_addstr(out, "#               to this changelist.  You may delete files from this list.\n");
+	strbuf_addstr(out, "#               (New changelists only.)\n");
+	strbuf_add_p4change_field(out, map, "Change");
+	strbuf_add_p4change_field(out, map, "Client");
+	strbuf_add_p4change_field(out, map, "User");
+	strbuf_add_p4change_field(out, map, "Status");
+	strbuf_add_p4change_field(out, map, "Description");
+	strbuf_add_p4change_field(out, map, "Jobs");
+	strbuf_add_p4change_multiple_fields(out, map, "File", "Files");
+}
+
+static void get_p4change_cb(struct hashmap *map, void *arg)
 {
 	struct hashmap *dst = (struct hashmap *) arg;
 	const char *codestr=py_dict_get_value(map, "code");
@@ -1378,133 +1457,47 @@ static void prepare_p4submit_template_cb(struct hashmap *map, void *arg)
 		py_dict_copy(dst, map);
 }
 
-static void prepare_p4submit_template(unsigned int changelist, struct strbuf *template)
+static void get_p4change(struct hashmap *change_entry, unsigned int changelist)
 {
-	struct hashmap p4settings;
-	struct hashmap change_entry;
-	struct strbuf upstream = STRBUF_INIT;
 	struct argv_array p4args = ARGV_ARRAY_INIT;
-	keyval_t *kw;
-	struct hashmap_iter hm_iter;
-	struct string_list file_list = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	const char *depot_path = NULL;
-	const char *field_names[] = { "Change", "Client", "User", "Status", "Description", "Jobs", NULL};
-	const char **pfield;
-	py_dict_init(&change_entry);
-	py_dict_init(&p4settings);
-	if (find_upstream_branch_point(0, &upstream, &p4settings) < 0)
-		die("Error findind upstream");
-	depot_path = py_dict_get_value(&p4settings, "depot-paths");
-	if (!depot_path)
-		die("No depot basis depot path found!");
 	argv_array_push(&p4args, "change");
 	argv_array_push(&p4args, "-o");
 	if (changelist)
 		argv_array_pushf(&p4args, "%u", changelist);
-	p4_cmd_run(p4args.argv, NULL, prepare_p4submit_template_cb, &change_entry);
-	if (!py_dict_get_value(&change_entry, "code"))
+	p4_cmd_run(p4args.argv, NULL, get_p4change_cb, change_entry);
+	if (!py_dict_get_value(change_entry, "code"))
 		die("Failed to decode output of p4 change -o");
-	hashmap_iter_init(&change_entry, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
-		if (!starts_with(kw->key.buf, "File"))
-			continue;
-		if (starts_with(kw->val.buf,depot_path))
-			string_list_append(&file_list, kw->val.buf);
-	}
-	strbuf_reset(template);
-	strbuf_addstr(template, "# A Perforce Change Specification.\n");
-	strbuf_addstr(template, "#\n");
-	strbuf_addstr(template, "#  Change:      The change number. 'new' on a new changelist.\n");
-	strbuf_addstr(template, "#  Date:        The date this specification was last modified.\n");
-	strbuf_addstr(template, "#  Client:      The client on which the changelist was created.  Read-only.\n");
-	strbuf_addstr(template, "#  User:        The user who created the changelist.\n");
-	strbuf_addstr(template, "#  Status:      Either 'pending' or 'submitted'. Read-only.\n");
-	strbuf_addstr(template, "#  Type:        Either 'public' or 'restricted'. Default is 'public'.\n");
-	strbuf_addstr(template, "#  Description: Comments about the changelist.  Required.\n");
-	strbuf_addstr(template, "#  Jobs:        What opened jobs are to be closed by this changelist.\n");
-	strbuf_addstr(template, "#               You may delete jobs from this list.  (New changelists only.)\n");
-	strbuf_addstr(template, "#  Files:       What opened files from the default changelist are to be added\n");
-	strbuf_addstr(template, "#               to this changelist.  You may delete files from this list.\n");
-	strbuf_addstr(template, "#               (New changelists only.)\n");
-	for (pfield = field_names; *pfield; pfield++) {
-		const char *val = py_dict_get_value(&change_entry, *pfield);
-		struct string_list field_lines = STRING_LIST_INIT_DUP;
-		if (!val)
-			continue;
-		strbuf_addf(template,"\n%s:", *pfield);
-		if (!strcmp(*pfield,"Description"))
-			strbuf_addch(template,'\n');
-		string_list_split(&field_lines, val, '\n', -1);
-		for_each_string_list_item(item, &field_lines)
-			strbuf_addf(template, "\t%s\n", item->string);
-		string_list_clear(&field_lines, 0);
-	}
-	if (file_list.nr) {
-		strbuf_addch(template,'\n');
-		strbuf_addstr(template,"Files:\n");
-	}
-	for_each_string_list_item(item, &file_list) {
-		strbuf_addf(template,"\t%s\n", item->string);
-	}
-	strbuf_release(&upstream);
-	py_dict_destroy(&p4settings);
-	py_dict_destroy(&change_entry);
 	argv_array_clear(&p4args);
-	string_list_clear(&file_list, 0);
-}
-
-void prepare_log_message(struct strbuf *out,
-		struct strbuf *template, struct strbuf *message)
-{
-	struct string_list template_lines = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	int in_description_section = 0;
-	strbuf_reset(out);
-	string_list_split(&template_lines, template->buf, '\n', -1);
-	for_each_string_list_item(item, &template_lines) {
-		if (starts_with(item->string, "#")) {
-			strbuf_addf(out, "%s\n", item->string);
-			continue;
-		}
-		if (in_description_section) {
-			if (starts_with(item->string, "Files:"))
-				in_description_section = 0;
-			else
-				continue;
-		}
-		else {
-			if (starts_with(item->string, "Description:")) {
-				struct string_list message_lines = STRING_LIST_INIT_DUP;
-				struct string_list_item *item_m;
-				in_description_section = 1;
-				strbuf_addf(out, "%s\n", item->string);
-				string_list_split(&message_lines, message->buf, '\n', -1);
-				for_each_string_list_item(item_m, &message_lines) {
-					strbuf_addf(out, "\t%s\n", item_m->string);
-				}
-				string_list_clear(&message_lines,0);
-				continue;
-			}
-		}
-		strbuf_addf(out, "%s\n", item->string);
-	}
-	string_list_clear(&template_lines, 0);
 }
 
 void dump_p4_log(FILE *fp, const char *commit_id, unsigned int changelist)
 {
+	struct strbuf upstream = STRBUF_INIT;
 	struct strbuf description = STRBUF_INIT;
-	struct strbuf template = STRBUF_INIT;
 	struct strbuf outlog = STRBUF_INIT;
+	struct hashmap p4change;
+	struct hashmap p4settings;
+	const char *depot_path = NULL;
+	py_dict_init(&p4change);
+	py_dict_init(&p4settings);
+	if (find_upstream_branch_point(0, &upstream, &p4settings) < 0)
+		die("Error findind upstream");
+	depot_path = py_dict_get_value(&p4settings, "depot-paths");
 	extract_log_message(commit_id, &description);
 	strbuf_trim(&description);
-	prepare_p4submit_template(changelist, &template);
-	prepare_log_message(&outlog, &template, &description);
+	get_p4change(&p4change, changelist);
+	py_dict_remove_non_depot_files(&p4change, depot_path);
+	py_dict_set_key_val(&p4change, "Description", description.buf);
+	strbuf_add_p4change(&outlog, &p4change);
 	strbuf_write(&outlog, fp);
+	if (IS_LOG_DEBUG_ALLOWED) {
+		strbuf_write(&outlog, p4_verbose_debug.fp);
+	}
 	strbuf_release(&description);
-	strbuf_release(&template);
 	strbuf_release(&outlog);
+	strbuf_release(&upstream);
+	py_dict_destroy(&p4change);
+	py_dict_destroy(&p4settings);
 }
 
 static void p4submit_apply_cb(struct strbuf *l, void *arg)
