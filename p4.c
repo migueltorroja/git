@@ -461,6 +461,8 @@ static int p4_set_exec_git(const char *client_dir, const char *p4_path, const ch
 	res = p4_cmd_run(p4args.argv, client_dir, NULL, NULL);
 	strbuf_release(&base_type);
 	strbuf_release(&mode_type);
+	strbuf_release(&q_path);
+	argv_array_clear(&p4args);
 	return res;
 }
 
