@@ -185,12 +185,21 @@ static void py_dict_put_kw(struct hashmap *map, keyval_t *kw)
 	hashmap_put(map,kw);
 }
 
+__attribute__((format (printf,3,4)))
+static void py_dict_set_key_valf(struct hashmap *map, const char *key, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	keyval_t *kw = keyval_init(NULL);
+	strbuf_addstr(&kw->key, key);
+	strbuf_vaddf(&kw->val, fmt, ap);
+	py_dict_put_kw(map,kw);
+	va_end(ap);
+}
+
 static void py_dict_set_key_val(struct hashmap *map, const char *key, const char *val)
 {
-	keyval_t *kw = keyval_init(NULL);
-	strbuf_addf(&kw->key,"%s",key);
-	strbuf_addf(&kw->val,"%s",val);
-	py_dict_put_kw(map,kw);
+	py_dict_set_key_valf(map, key, "%s", val);
 }
 
 static const keyval_t *py_dict_get_kw(struct hashmap *map, const char *str)
@@ -787,13 +796,8 @@ static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict
 		if (IS_LOG_DEBUG_ALLOWED)
 			py_dict_print(p4_verbose_debug.fp, &settings_map);
 		depot_path = py_dict_get_value(&settings_map,"depot-paths");
-		if (depot_path) {
-			struct strbuf remote_branch = STRBUF_INIT;
-			strbuf_addf(&remote_branch,"remotes/p4/%s",kw->key.buf);
-			py_dict_set_key_val(branch_by_depot_dict,depot_path, remote_branch.buf);
-			strbuf_release(&remote_branch);
-
-		}
+		if (depot_path)
+			py_dict_set_key_valf(branch_by_depot_dict, "remotes/p4/%s", depot_path);
 		strbuf_release(&sb);
 		py_dict_destroy(&settings_map);
 	}
@@ -1029,13 +1033,10 @@ void p4usermap_get_id(struct p4_user_map_t *user_map, struct strbuf *sb_id)
 static void p4usermap_add_user(struct p4_user_map_t *p4_user_map,
 		const char *user, const char *email, const char *full_name)
 {
-	struct strbuf sb_user = STRBUF_INIT;
 	if ((!user) || (!email) || (!full_name))
 		return;
-	strbuf_addf(&sb_user,"%s <%s>", full_name, email);
-	py_dict_set_key_val(&p4_user_map->users, user, sb_user.buf);
+	py_dict_set_key_valf(&p4_user_map->users, user, "%s <%s>", full_name, email);
 	py_dict_set_key_val(&p4_user_map->emails, email, user);
-	strbuf_release(&sb_user);
 }
 
 static void p4usermap_update_users_info_cb(struct hashmap *map, void *arg1)
