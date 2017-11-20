@@ -67,6 +67,14 @@ struct p4_verbose_debug_t {
 
 struct p4_verbose_debug_t p4_verbose_debug = P4_VERBOSE_INIT;
 
+struct p4_global_options_t {
+	struct strbuf p4userclient;
+	struct strbuf p4tmpclient;
+	struct strbuf p4user;
+	struct strbuf p4port;
+} p4_global_options;
+
+
 void p4_verbose_init(struct p4_verbose_debug_t *p4verbose, int level, FILE *fp)
 {
 	p4verbose->verbose_level = level;
@@ -272,6 +280,10 @@ static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct ha
 	if (dir) {
 		child_p4.dir = dir;
 		argv_array_pushf(&child_p4.env_array, "PWD=%s",dir);
+	}
+	if (p4_global_options.p4tmpclient.len)
+	{
+		argv_array_pushf(&child_p4.env_array, "P4CLIENT=%s", p4_global_options.p4tmpclient.buf);
 	}
 	if (start_command(&child_p4))
 		die("cannot start p4 process");
@@ -1103,13 +1115,6 @@ void p4usermap_deinit(struct p4_user_map_t *user_map)
 
 enum { CONFLICT_ASK, CONFLICT_SKIP, CONFLICT_QUIT, CONFLICT_UNKNOWN};
 
-struct p4_global_options_t {
-	struct strbuf p4userclient;
-	struct strbuf p4tmpclient;
-	struct strbuf p4user;
-	struct strbuf p4port;
-} p4_global_options;
-
 struct p4submit_data_t {
 	struct strbuf origin;
 	struct strbuf branch; 
@@ -1517,13 +1522,14 @@ static void create_p4tmpclient_name(struct strbuf *tmpclient)
 	strbuf_release(&sb_cwd);
 }
 
-static void create_p4tmpclient(struct strbuf *client_name, const char *depot_path)
+static void create_p4tmpclient(const char *depot_path)
 {
 	struct hashmap template_client_map;
 	struct child_process p4_client = CHILD_PROCESS_INIT;
 	struct strbuf p4_local_path = STRBUF_INIT;
 	struct strbuf p4_local_path_converted = STRBUF_INIT;
 	struct strbuf sb_client_spec = STRBUF_INIT;
+	struct strbuf *client_name = &p4_global_options.p4tmpclient;
 	const char *tmpdir = NULL;
 	strbuf_reset(client_name);
 	py_dict_init(&template_client_map);
@@ -1585,6 +1591,13 @@ static void delete_p4client(const char *client_name)
 	p4_cmd_run(p4_delete, NULL, NULL, NULL);
 	argv_array_clear(&revert_args);
 	argv_array_clear(&sync_args);
+}
+
+static void delete_p4tmpclient(void)
+{
+	if (p4_global_options.p4tmpclient.len)
+		delete_p4client(p4_global_options.p4tmpclient.buf);
+	strbuf_reset(&p4_global_options.p4tmpclient);
 }
 
 void dump_p4_log(FILE *fp, const char *commit_id, unsigned int changelist)
@@ -1777,6 +1790,10 @@ int p4submit_apply(const char *commit_id)
 	}
 	p4_submit.in = -1;
 	p4_submit.argv = gitargs.argv;
+	if (p4_global_options.p4tmpclient.len)
+	{
+		argv_array_pushf(&p4_submit.env_array, "P4CLIENT=%s", p4_global_options.p4tmpclient.buf);
+	}
 	if (start_command(&p4_submit)) {
 		die("cannot start p4_submit");
 	}
@@ -1894,6 +1911,7 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	if (p4submit_options.preserve_user &&
 			!p4_has_admin_permissions(p4submit_options.depot_path.buf))
 		die("Cannot preserve user names without p4 super-user or admin permissions");
+	create_p4tmpclient(p4submit_options.depot_path.buf);
 	p4_where(p4submit_options.depot_path.buf,&p4submit_options.client_path);
 	if (!p4submit_options.client_path.len)
 		die("Error: Cannot locate perforce checkout of %s in client view", p4submit_options.depot_path.buf);
@@ -1925,10 +1943,8 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		strbuf_addstr(&p4submit_options.diff_opts, " -C");
 	if (p4submit_options.detect_copies_harder)
 		strbuf_addstr(&p4submit_options.diff_opts, " --find-copies-harder");
-	create_p4tmpclient(&p4_global_options.p4tmpclient, p4submit_options.depot_path.buf);
 	if (p4submit_options.dry_run)
 		fprintf(stdout, "Would apply\n");
-	delete_p4client(p4_global_options.p4tmpclient.buf);
 	if (commits.len) {
 		struct strbuf **strb_list;
 		struct strbuf **strb_iter;
@@ -1945,6 +1961,7 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		}
 		strbuf_list_free(strb_list);
 	}
+	delete_p4tmpclient();
 	strbuf_release(&strb_master);
 	strbuf_release(&commits);
 }
