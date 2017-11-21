@@ -797,7 +797,7 @@ static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict
 			py_dict_print(p4_verbose_debug.fp, &settings_map);
 		depot_path = py_dict_get_value(&settings_map,"depot-paths");
 		if (depot_path)
-			py_dict_set_key_valf(branch_by_depot_dict, "remotes/p4/%s", depot_path);
+			py_dict_set_key_valf(branch_by_depot_dict, depot_path, "remotes/p4/%s", kw->key.buf);
 		strbuf_release(&sb);
 		py_dict_destroy(&settings_map);
 	}
@@ -967,10 +967,38 @@ static int p4_where(const char *depot_path, struct strbuf *client_path)
 	return ret;
 }
 
+static int p4_sync(const char *client_path, struct string_list *local_files)
+{
+	struct argv_array sync_args = ARGV_ARRAY_INIT;
+	argv_array_push(&sync_args, "sync");
+	int retp4 = -1;
+	if (!local_files) {
+		argv_array_push(&sync_args, "...");
+	}
+	else {
+		struct string_list_item *item;
+		for_each_string_list_item(item, local_files) {
+			argv_array_push(&sync_args, item->string);
+		}
+	}
+	retp4 = p4_cmd_run(sync_args.argv, client_path, NULL, NULL);
+	argv_array_clear(&sync_args);
+	return retp4;
+}
+
 static int p4_sync_dir(const char *client_path)
 {
-	const char *cmd_list[] = { "sync", "...", NULL};
-	return p4_cmd_run(cmd_list, client_path, NULL, NULL);
+	return p4_sync(client_path, NULL);
+}
+
+static int p4_sync_file(const char *client_path, const char *filename)
+{
+	struct string_list syncfiles = STRING_LIST_INIT_DUP;
+	int retp4sync = 0;
+	string_list_insert(&syncfiles, filename);
+	retp4sync = p4_sync(client_path, &syncfiles);
+	string_list_clear(&syncfiles, 0);
+	return retp4sync;
 }
 
 static int dir_exists(const char *path)
@@ -1537,6 +1565,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	}
 	switch (modifier) {
 	case 'M':
+		p4_sync_file(cli_path, src_path.buf);
 		p4_edit(cli_path, src_path.buf,0);
 		if (is_git_mode_exec_changed(src_mode, dst_mode))
 			py_dict_set_key_val(&files_to_update->exec_bit_changed, src_path.buf, dst_mode);
@@ -1632,6 +1661,7 @@ int p4submit_apply(const char *commit_id)
 		goto leave;
 	}
 	for_each_string_list_item(item,&files_to_update.type_changed) {
+		p4_sync_file(cli_path, item->string);
 		p4_edit(cli_path, item->string, 1);
 	}
 	for_each_string_list_item(item,&files_to_update.added) {
@@ -1639,6 +1669,7 @@ int p4submit_apply(const char *commit_id)
 	}
 	for_each_string_list_item(item,&files_to_update.deleted) {
 		p4_revert(cli_path, item->string);
+		p4_sync_file(cli_path, item->string);
 		p4_delete(cli_path, item->string);
 	}
 	hashmap_iter_init(&files_to_update.exec_bit_changed, &hm_iter);
@@ -1785,13 +1816,7 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	fprintf(stdout, "Perforce checkout for depot path %s located at %s\n",
 			p4submit_options.depot_path.buf,
 			p4submit_options.client_path.buf);
-	if (!p4submit_options.dry_run) {
-		fprintf(stdout, "Synchronizing p4 checkout...\n");
-		p4_sync_dir(p4submit_options.client_path.buf);
-		if (!dir_exists(p4submit_options.client_path.buf))
-			die("Directory does not exist %s\n",p4submit_options.client_path.buf);
-	}
-	else {
+	if (p4submit_options.dry_run) {
 		fprintf(stdout, "Would synchronize p4 checkout in %s\n", p4submit_options.client_path.buf);
 	}
 	if (p4_nfiles_opened(p4submit_options.client_path.buf))
