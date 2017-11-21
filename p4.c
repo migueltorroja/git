@@ -818,15 +818,16 @@ int find_upstream_branch_point(int local,struct strbuf *upstream, struct hashmap
 	if (find_p4_parent_commit(&parent_commit,p4settings) == 0) {
 		const char *upstream_val;
 		const char *depot_path = py_dict_get_value(p4settings,"depot-paths");
+		strbuf_reset(upstream);
 		upstream_val = py_dict_get_value(&branch_bydepot_map,depot_path);
-		if (upstream_val != NULL) {
-			strbuf_reset(upstream);
-			strbuf_addf(upstream,"%s",upstream_val);
-			ret = 0;
-		}
+		if (upstream_val != NULL)
+			strbuf_addstr(upstream, upstream_val);
 		else
-			ret = -1;
+			strbuf_addbuf(upstream, &parent_commit);
+		ret = 0;
 	}
+	else 
+		ret = -1;
 	strbuf_release(&parent_commit);
 	py_dict_destroy(&branch_bydepot_map);
 	return ret;
@@ -1133,7 +1134,7 @@ void p4usermap_deinit(struct p4_user_map_t *user_map)
 enum { CONFLICT_ASK, CONFLICT_SKIP, CONFLICT_QUIT, CONFLICT_UNKNOWN};
 
 struct p4submit_data_t {
-	struct strbuf origin;
+	struct strbuf base_commit;
 	struct strbuf branch; 
 	struct strbuf depot_path;
 	struct strbuf client_path;
@@ -1189,7 +1190,7 @@ static int p4submit_cmd_parse_conflict_mode(const struct option *opt,
 static void p4submit_cmd_deinit(struct command_t *pcmd)
 {
 	p4usermap_deinit(&p4submit_options.p4_user_map);
-	strbuf_release(&p4submit_options.origin);
+	strbuf_release(&p4submit_options.base_commit);
 	strbuf_release(&p4submit_options.branch);
 	strbuf_release(&p4submit_options.depot_path);
 	strbuf_release(&p4submit_options.client_path);
@@ -1754,8 +1755,8 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		}
 	}
 	if (origin) {
-		strbuf_reset(&p4submit_options.origin);
-		strbuf_addf(&p4submit_options.origin, "%s",origin);
+		strbuf_reset(&p4submit_options.base_commit);
+		strbuf_addstr(&p4submit_options.base_commit, origin);
 	}
 
 	if (branch) {
@@ -1786,21 +1787,21 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	else
 		die("Wrong p4 submit parameters");
 	do {
-		struct strbuf upstream = STRBUF_INIT;
+		struct strbuf base_commit = STRBUF_INIT;
 		struct hashmap dict_map;
 		py_dict_init(&dict_map);
-		if (find_upstream_branch_point(0, &upstream, &dict_map) == 0) {
+		if (find_upstream_branch_point(0, &base_commit, &dict_map) == 0) {
 			strbuf_reset(&p4submit_options.depot_path);
 			strbuf_addf(&p4submit_options.depot_path,"%s", py_dict_get_value(&dict_map,"depot-paths"));
-			if (p4submit_options.origin.len == 0)
-				strbuf_addf(&p4submit_options.origin, "%s", upstream.buf);
-			LOG_GITP4_DEBUG("Upstream: %s\n",upstream.buf);
+			if (p4submit_options.base_commit.len == 0)
+				strbuf_addbuf(&p4submit_options.base_commit, &base_commit);
+			LOG_GITP4_DEBUG("Upstream: %s\n",base_commit.buf);
 			if (IS_LOG_DEBUG_ALLOWED)
 				py_dict_print(p4_verbose_debug.fp, &dict_map);
-			LOG_GITP4_DEBUG("Upstream: %s\n",p4submit_options.origin.buf);
+			LOG_GITP4_DEBUG("Upstream: %s\n",p4submit_options.base_commit.buf);
 			LOG_GITP4_DEBUG("depot-path: %s\n", p4submit_options.depot_path.buf);
 		}
-		strbuf_release(&upstream);
+		strbuf_release(&base_commit);
 		py_dict_destroy(&dict_map);
 	} while(0);
 
@@ -1821,7 +1822,7 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	}
 	if (p4_nfiles_opened(p4submit_options.client_path.buf))
 		die("You have files opened with perforce! Close them before starting the sync.");
-	git_list_commits(p4submit_options.origin.buf, strb_master.buf, &commits);
+	git_list_commits(p4submit_options.base_commit.buf, strb_master.buf, &commits);
 	if (p4submit_options.preserve_user && p4submit_options.skip_user_name_check) 
 		p4submit_options.check_authorship = 1;
 	else
@@ -1928,7 +1929,7 @@ void p4submit_cmd_init(struct command_t *pcmd)
 	pcmd->deinit_fn = p4submit_cmd_deinit;
 	pcmd->data = NULL;
 	memset(&p4submit_options, 0, sizeof(p4submit_options));
-	strbuf_init(&p4submit_options.origin, 0);
+	strbuf_init(&p4submit_options.base_commit, 0);
 	strbuf_init(&p4submit_options.branch, 0);
 	strbuf_init(&p4submit_options.depot_path, 0);
 	strbuf_init(&p4submit_options.client_path, 0);
