@@ -67,14 +67,6 @@ struct p4_verbose_debug_t {
 
 struct p4_verbose_debug_t p4_verbose_debug = P4_VERBOSE_INIT;
 
-struct p4_global_options_t {
-	struct strbuf p4userclient;
-	struct strbuf p4tmpclient;
-	struct strbuf p4user;
-	struct strbuf p4port;
-} p4_global_options;
-
-
 void p4_verbose_init(struct p4_verbose_debug_t *p4verbose, int level, FILE *fp)
 {
 	p4verbose->verbose_level = level;
@@ -280,10 +272,6 @@ static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct ha
 	if (dir) {
 		child_p4.dir = dir;
 		argv_array_pushf(&child_p4.env_array, "PWD=%s",dir);
-	}
-	if (p4_global_options.p4tmpclient.len)
-	{
-		argv_array_pushf(&child_p4.env_array, "P4CLIENT=%s", p4_global_options.p4tmpclient.buf);
 	}
 	if (start_command(&child_p4))
 		die("cannot start p4 process");
@@ -809,7 +797,7 @@ static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict
 			py_dict_print(p4_verbose_debug.fp, &settings_map);
 		depot_path = py_dict_get_value(&settings_map,"depot-paths");
 		if (depot_path)
-			py_dict_set_key_valf(branch_by_depot_dict, depot_path, "remotes/p4/%s", kw->key.buf);
+			py_dict_set_key_valf(branch_by_depot_dict, "remotes/p4/%s", depot_path);
 		strbuf_release(&sb);
 		py_dict_destroy(&settings_map);
 	}
@@ -1388,23 +1376,6 @@ static int is_git_mode_exec_changed(const char *src_mode, const char *dst_mode)
 	return (ends_with(src_mode,"755") != ends_with(dst_mode,"755"));
 }
 
-static void py_dict_remove_field_starts_with(struct hashmap *map, const char *field_prefix)
-{
-	struct hashmap_iter hm_iter;
-	const keyval_t *kw;
-	struct hashmap maptmp;
-	py_dict_init(&maptmp);
-	hashmap_iter_init(map, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
-		if (starts_with(kw->key.buf, field_prefix)) {
-			continue;
-		}
-		py_dict_set_key_val(&maptmp, kw->key.buf, kw->val.buf);
-	}
-	SWAP(*map, maptmp);
-	py_dict_destroy(&maptmp);
-}
-
 static void py_dict_remove_non_depot_files(struct hashmap *map, const char *depot_path)
 {
 	struct hashmap_iter hm_iter;
@@ -1422,7 +1393,7 @@ static void py_dict_remove_non_depot_files(struct hashmap *map, const char *depo
 	py_dict_destroy(&maptmp);
 }
 
-static void strbuf_add_p4spec_multiple_fields(struct strbuf *out, struct hashmap *map, const char *prefix_field, const char *output_field_name)
+static void strbuf_add_p4change_multiple_fields(struct strbuf *out, struct hashmap *map, const char *prefix_field, const char *output_field_name)
 {
 	struct hashmap_iter hm_iter;
 	const keyval_t *kw;
@@ -1435,7 +1406,7 @@ static void strbuf_add_p4spec_multiple_fields(struct strbuf *out, struct hashmap
 	}
 }
 
-static void strbuf_add_p4spec_field(struct strbuf *out, struct hashmap *map, const char *field)
+static void strbuf_add_p4change_field(struct strbuf *out, struct hashmap *map, const char *field)
 {
 	const keyval_t *kw;
 	struct string_list field_line_list = STRING_LIST_INIT_DUP;
@@ -1468,16 +1439,16 @@ static void strbuf_add_p4change(struct strbuf *out, struct hashmap *map)
 	strbuf_addstr(out, "#  Files:       What opened files from the default changelist are to be added\n");
 	strbuf_addstr(out, "#               to this changelist.  You may delete files from this list.\n");
 	strbuf_addstr(out, "#               (New changelists only.)\n");
-	strbuf_add_p4spec_field(out, map, "Change");
-	strbuf_add_p4spec_field(out, map, "Client");
-	strbuf_add_p4spec_field(out, map, "User");
-	strbuf_add_p4spec_field(out, map, "Status");
-	strbuf_add_p4spec_field(out, map, "Description");
-	strbuf_add_p4spec_field(out, map, "Jobs");
-	strbuf_add_p4spec_multiple_fields(out, map, "File", "Files");
+	strbuf_add_p4change_field(out, map, "Change");
+	strbuf_add_p4change_field(out, map, "Client");
+	strbuf_add_p4change_field(out, map, "User");
+	strbuf_add_p4change_field(out, map, "Status");
+	strbuf_add_p4change_field(out, map, "Description");
+	strbuf_add_p4change_field(out, map, "Jobs");
+	strbuf_add_p4change_multiple_fields(out, map, "File", "Files");
 }
 
-static void get_p4spec_cb(struct hashmap *map, void *arg)
+static void get_p4change_cb(struct hashmap *map, void *arg)
 {
 	struct hashmap *dst = (struct hashmap *) arg;
 	const char *codestr=py_dict_get_value(map, "code");
@@ -1494,110 +1465,10 @@ static void get_p4change(struct hashmap *change_entry, unsigned int changelist)
 	argv_array_push(&p4args, "-o");
 	if (changelist)
 		argv_array_pushf(&p4args, "%u", changelist);
-	p4_cmd_run(p4args.argv, NULL, get_p4spec_cb, change_entry);
+	p4_cmd_run(p4args.argv, NULL, get_p4change_cb, change_entry);
 	if (!py_dict_get_value(change_entry, "code"))
 		die("Failed to decode output of p4 change -o");
 	argv_array_clear(&p4args);
-}
-
-static void get_p4client(struct hashmap *client_entry, const char *client_name, const char *local_dir)
-{
-	struct argv_array clientargs = ARGV_ARRAY_INIT;
-	argv_array_push(&clientargs, "client");
-	argv_array_push(&clientargs, "-o");
-	if (client_name)
-		argv_array_push(&clientargs, client_name);
-	p4_cmd_run(clientargs.argv, local_dir, get_p4spec_cb, client_entry);
-	if (!py_dict_get_value(client_entry, "code"))
-		die("Failed to decode output of p4 client -o");
-	argv_array_clear(&clientargs);
-}
-
-static void create_p4tmpclient_name(struct strbuf *tmpclient)
-{
-	struct strbuf sb_cwd = STRBUF_INIT;
-	strbuf_reset(tmpclient);
-	strbuf_getcwd(&sb_cwd);
-	strbuf_addf(tmpclient, "gitp4_client_%08x", strhash(sb_cwd.buf));
-	strbuf_release(&sb_cwd);
-}
-
-static void create_p4tmpclient(const char *depot_path)
-{
-	struct hashmap template_client_map;
-	struct child_process p4_client = CHILD_PROCESS_INIT;
-	struct strbuf p4_local_path = STRBUF_INIT;
-	struct strbuf p4_local_path_converted = STRBUF_INIT;
-	struct strbuf sb_client_spec = STRBUF_INIT;
-	struct strbuf *client_name = &p4_global_options.p4tmpclient;
-	const char *tmpdir = NULL;
-	strbuf_reset(client_name);
-	py_dict_init(&template_client_map);
-	tmpdir = getenv("TMPDIR");
-	if (!tmpdir)
-		tmpdir = "/tmp";
-	strbuf_addf(&p4_local_path, "%s/gitp4XXXXXX", tmpdir);
-	mkdtemp(p4_local_path.buf);
-	create_p4tmpclient_name(client_name);
-	get_p4client(&template_client_map, client_name->buf, p4_local_path.buf); //Mainly to convert the directory
-	py_dict_set_key_val(&template_client_map, "LineEnd", "unix");
-	py_dict_set_key_val(&template_client_map, "Description", "p4 client created by git-p4");
-	py_dict_remove_field_starts_with(&template_client_map, "View");
-	py_dict_set_key_valf(&template_client_map,
-			"View0","%s... //%s/...", depot_path, client_name->buf);
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "Client");
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "Owner");
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "Host");
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "Description");
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "Root");
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "Options");
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "SubmitOptions");
-	strbuf_add_p4spec_field(&sb_client_spec, &template_client_map, "LineEnd");
-	strbuf_add_p4spec_multiple_fields(&sb_client_spec, &template_client_map, "View", "View");
-	argv_array_push(&p4_client.args, "p4");
-	argv_array_push(&p4_client.args, "client");
-	argv_array_push(&p4_client.args, "-i");
-	p4_client.in = -1;
-	p4_client.dir = p4_local_path.buf;
-	if (start_command(&p4_client)) {
-		die("Cannot start p4 client -i");
-	}
-	FILE *fp = fdopen(p4_client.in, "w");
-	strbuf_write(&sb_client_spec, fp);
-	fclose(fp);
-	if (IS_LOG_DEBUG_ALLOWED) {
-		strbuf_write(&sb_client_spec, p4_verbose_debug.fp);
-	}
-	if (finish_command(&p4_client)) {
-		die("Command client -i failed");
-	}
-	py_dict_destroy(&template_client_map);
-	strbuf_release(&sb_client_spec);
-	strbuf_release(&p4_local_path);
-}
-
-static void delete_p4client(const char *client_name)
-{
-	struct argv_array revert_args = ARGV_ARRAY_INIT;
-	struct argv_array sync_args = ARGV_ARRAY_INIT;
-	const char *p4_delete[] = {"client", "-d", client_name, NULL};
-	argv_array_push(&revert_args, "revert");
-	argv_array_pushf(&revert_args, "//%s/...", client_name);
-	p4_cmd_run(revert_args.argv, NULL, NULL, NULL);
-	argv_array_push(&sync_args, "sync");
-	argv_array_push(&sync_args, "-f");
-	argv_array_pushf(&sync_args, "//%s/...#0", client_name);
-	p4_cmd_run(sync_args.argv, NULL, NULL, NULL);
-	p4_cmd_run(p4_delete, NULL, NULL, NULL);
-	argv_array_clear(&revert_args);
-	argv_array_clear(&sync_args);
-}
-
-static void delete_p4tmpclient(void)
-{
-	if (p4_global_options.p4tmpclient.len)
-		delete_p4client(p4_global_options.p4tmpclient.buf);
-	strbuf_reset(&p4_global_options.p4tmpclient);
 }
 
 void dump_p4_log(FILE *fp, const char *commit_id, unsigned int changelist)
@@ -1790,10 +1661,6 @@ int p4submit_apply(const char *commit_id)
 	}
 	p4_submit.in = -1;
 	p4_submit.argv = gitargs.argv;
-	if (p4_global_options.p4tmpclient.len)
-	{
-		argv_array_pushf(&p4_submit.env_array, "P4CLIENT=%s", p4_global_options.p4tmpclient.buf);
-	}
 	if (start_command(&p4_submit)) {
 		die("cannot start p4_submit");
 	}
@@ -1911,7 +1778,6 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	if (p4submit_options.preserve_user &&
 			!p4_has_admin_permissions(p4submit_options.depot_path.buf))
 		die("Cannot preserve user names without p4 super-user or admin permissions");
-	create_p4tmpclient(p4submit_options.depot_path.buf);
 	p4_where(p4submit_options.depot_path.buf,&p4submit_options.client_path);
 	if (!p4submit_options.client_path.len)
 		die("Error: Cannot locate perforce checkout of %s in client view", p4submit_options.depot_path.buf);
@@ -1943,6 +1809,7 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		strbuf_addstr(&p4submit_options.diff_opts, " -C");
 	if (p4submit_options.detect_copies_harder)
 		strbuf_addstr(&p4submit_options.diff_opts, " --find-copies-harder");
+
 	if (p4submit_options.dry_run)
 		fprintf(stdout, "Would apply\n");
 	if (commits.len) {
@@ -1961,7 +1828,6 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		}
 		strbuf_list_free(strb_list);
 	}
-	delete_p4tmpclient();
 	strbuf_release(&strb_master);
 	strbuf_release(&commits);
 }
@@ -2282,29 +2148,6 @@ command_t *cmd_init_by_name(const char *p4cmd, command_t *cmd)
 	return NULL;
 }
 
-
-
-static int p4_global_git_config(const char *k, const char *v, void *cb)
-{
-	if (!strcmp(k, "git-p4.useclientspec")) {
-		strbuf_addstr(&p4_global_options.p4userclient, v);
-	}
-	return 0;
-}
-
-static void global_options_from_config(void)
-{
-	git_config(p4_global_git_config,NULL);
-}
-
-static void global_options_init(void)
-{
-	strbuf_init(&p4_global_options.p4userclient, 0);
-	strbuf_init(&p4_global_options.p4tmpclient, 0);
-	strbuf_init(&p4_global_options.p4user, 0);
-	strbuf_init(&p4_global_options.p4port, 0);
-}
-
 int cmd_main(int argc, const char **argv)
 {
 	command_t cmd;
@@ -2316,8 +2159,6 @@ int cmd_main(int argc, const char **argv)
 		OPT_END()
 	};
 	setup_git_directory();
-	global_options_init();
-	global_options_from_config();
 	argc = parse_options(argc, argv, NULL, options, NULL, PARSE_OPT_STOP_AT_NON_OPTION);
 	p4_verbose_init(&p4_verbose_debug, debuglevel, NULL);
 	if (!argc)
