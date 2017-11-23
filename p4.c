@@ -30,7 +30,7 @@ typedef struct keyval_t{
 keyval_t *keyval_init(keyval_t *kw);
 void keyval_copy(keyval_t *dst, keyval_t *src);
 struct hashmap *py_marshal_parse(FILE *fp);
-static void py_dict_destroy(struct hashmap *map);
+static void str_dict_destroy(struct hashmap *map);
 void keyval_print(FILE *fp, keyval_t *kw);
 void keyval_release(keyval_t *kw);
 void keyval_append_key_f(keyval_t *kw, FILE *fp, size_t n);
@@ -154,12 +154,12 @@ static int p4keyval_cmp(const void *userdata,
 
 
 
-static void py_dict_init(struct hashmap *map)
+static void str_dict_init(struct hashmap *map)
 {
 	hashmap_init(map, p4keyval_cmp, NULL, 0);
 }
 
-static void py_dict_destroy(struct hashmap *map)
+static void str_dict_destroy(struct hashmap *map)
 {
 	struct hashmap_iter hm_iter;
 	hashmap_iter_init(map, &hm_iter);
@@ -170,13 +170,13 @@ static void py_dict_destroy(struct hashmap *map)
 }
 
 
-static void py_dict_reset(struct hashmap *map)
+static void str_dict_reset(struct hashmap *map)
 {
-	py_dict_destroy(map);
-	py_dict_init(map);
+	str_dict_destroy(map);
+	str_dict_init(map);
 }
 
-static void py_dict_put_kw(struct hashmap *map, keyval_t *kw)
+static void str_dict_put_kw(struct hashmap *map, keyval_t *kw)
 {
 	keyval_t *prev_kw = NULL;
 	hashmap_entry_init(kw,strhash(kw->key.buf));
@@ -186,39 +186,39 @@ static void py_dict_put_kw(struct hashmap *map, keyval_t *kw)
 }
 
 __attribute__((format (printf,3,4)))
-static void py_dict_set_key_valf(struct hashmap *map, const char *key, const char *fmt, ...)
+static void str_dict_set_key_valf(struct hashmap *map, const char *key, const char *fmt, ...)
 {
 	va_list ap;
 	va_start(ap, fmt);
 	keyval_t *kw = keyval_init(NULL);
 	strbuf_addstr(&kw->key, key);
 	strbuf_vaddf(&kw->val, fmt, ap);
-	py_dict_put_kw(map,kw);
+	str_dict_put_kw(map,kw);
 	va_end(ap);
 }
 
-static void py_dict_set_key_val(struct hashmap *map, const char *key, const char *val)
+static void str_dict_set_key_val(struct hashmap *map, const char *key, const char *val)
 {
-	py_dict_set_key_valf(map, key, "%s", val);
+	str_dict_set_key_valf(map, key, "%s", val);
 }
 
-static const keyval_t *py_dict_get_kw(struct hashmap *map, const char *str)
+static const keyval_t *str_dict_get_kw(struct hashmap *map, const char *str)
 {
 	keyval_t *kw;
 	kw = hashmap_get_from_hash(map, strhash(str), str);
 	return kw;
 }
 
-static const char *py_dict_get_value(struct hashmap *map, const char *str)
+static const char *str_dict_get_value(struct hashmap *map, const char *str)
 {
 	const keyval_t *kw;
-	kw = py_dict_get_kw(map,str);
+	kw = str_dict_get_kw(map,str);
 	if (NULL == kw)
 		return NULL;
 	return kw->val.buf;
 }
 
-static void py_dict_print(FILE *fp, struct hashmap *map)
+static void str_dict_print(FILE *fp, struct hashmap *map)
 {
 	if (NULL == fp)
 		fp = stdout;
@@ -242,16 +242,16 @@ static void py_dict_print(FILE *fp, struct hashmap *map)
 	} 
 }
 
-static void py_dict_copy(struct hashmap *dst, struct hashmap *src)
+static void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 {
-	py_dict_reset(dst);
+	str_dict_reset(dst);
 	keyval_t *kw;
 	struct hashmap_iter hm_iter;
 	hashmap_iter_init(src, &hm_iter);
 	while ((kw = hashmap_iter_next(&hm_iter))) {
 		keyval_t *copykw = keyval_init(NULL);
 		keyval_copy(copykw, kw);
-		py_dict_put_kw(dst, copykw);
+		str_dict_put_kw(dst, copykw);
 	}
 }
 
@@ -280,7 +280,7 @@ static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct ha
 	{
 		if (cb)
 			cb(map,data);
-		py_dict_destroy(map);
+		str_dict_destroy(map);
 		free(map);
 	}
 	fclose(fp);
@@ -431,7 +431,7 @@ static void remove_p4_modes(struct strbuf *p4mod, const char *rmmods)
 static void p4_opened_type_cb(struct hashmap *map, void *arg)
 {
 	struct strbuf *p4type_buf = (struct strbuf *) arg;
-	const char *p4type_str = py_dict_get_value(map, "type");
+	const char *p4type_str = str_dict_get_value(map, "type");
 	if (p4type_str) {
 		strbuf_reset(p4type_buf);
 		strbuf_addstr(p4type_buf, p4type_str);
@@ -486,7 +486,7 @@ static void p4_has_admin_permissions_cb(struct hashmap *map, void *arg)
 {
 	int *admin_perm = (int *)arg;
 	const char *perm_val = NULL;
-	perm_val = py_dict_get_value(map, "perm");
+	perm_val = str_dict_get_value(map, "perm");
 	if (!perm_val)
 		return;
 	if (strcmp(perm_val, "admin") == 0)
@@ -506,7 +506,7 @@ static int p4_has_admin_permissions(const char *depot_path)
 static void p4debug_print_cb(struct hashmap *map, void *data)
 {
 	FILE *fp = (FILE *) data;
-	py_dict_print(fp, map);
+	str_dict_print(fp, map);
 }
 
 static void p4debug_cmd_run(command_t *pcmd, int gargc, const char **gargv)
@@ -608,7 +608,7 @@ static void p4_branches_in_git_cb(struct strbuf *sb_line, void *arg)
 	kw = keyval_init(NULL);
 	strbuf_addstr(&kw->key,sb_line->buf+3);
 	parse_revision(&kw->val,sb_line->buf);
-	py_dict_put_kw(map,kw);
+	str_dict_put_kw(map,kw);
 }
 
 int p4_branches_in_git(struct hashmap *map, int local_branches)
@@ -735,7 +735,7 @@ int extract_p4_settings_git_log(struct hashmap *map, const char *log)
 			if (git_p4_found) {
 				kw = keyval_init(NULL);
 				if (keyval_equal_assign(kw, equal_item->string) == 0)
-					py_dict_put_kw(map,kw);
+					str_dict_put_kw(map,kw);
 				else
 					keyval_release(kw);
 			}
@@ -764,10 +764,10 @@ int find_p4_parent_commit(struct strbuf *strb_commit, struct hashmap *p4settings
 	rout = git_cmd_read_pipe_full(cmd_list, strb_commit);
 	strbuf_trim(strb_commit);
 	if (!rout && strb_commit->len > 0) {
-		py_dict_reset(p4settings);
+		str_dict_reset(p4settings);
 		extract_log_message(strb_commit->buf,&sb);
 		rout = extract_p4_settings_git_log(p4settings, sb.buf);
-		depot_path = py_dict_get_value(p4settings, "depot-paths");
+		depot_path = str_dict_get_value(p4settings, "depot-paths");
 	}
 	else
 		rout = -1;
@@ -782,26 +782,26 @@ static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict
 	struct hashmap map;
 	struct hashmap_iter hm_iter;
 	keyval_t *kw;
-	py_dict_init(&map);
+	str_dict_init(&map);
 	p4_branches_in_git(&map,local);
 	hashmap_iter_init(&map, &hm_iter);
 	while ((kw = hashmap_iter_next(&hm_iter))) {
 		struct strbuf sb = STRBUF_INIT;
 		struct hashmap settings_map;
 		const char *depot_path = NULL;
-		py_dict_init(&settings_map);
+		str_dict_init(&settings_map);
 		extract_log_message(kw->val.buf,&sb);
 		LOG_GITP4_DEBUG("git log message:\n%s\n", sb.buf);
 		extract_p4_settings_git_log(&settings_map, sb.buf);
 		if (IS_LOG_DEBUG_ALLOWED)
-			py_dict_print(p4_verbose_debug.fp, &settings_map);
-		depot_path = py_dict_get_value(&settings_map,"depot-paths");
+			str_dict_print(p4_verbose_debug.fp, &settings_map);
+		depot_path = str_dict_get_value(&settings_map,"depot-paths");
 		if (depot_path)
-			py_dict_set_key_valf(branch_by_depot_dict, depot_path, "remotes/p4/%s", kw->key.buf);
+			str_dict_set_key_valf(branch_by_depot_dict, depot_path, "remotes/p4/%s", kw->key.buf);
 		strbuf_release(&sb);
-		py_dict_destroy(&settings_map);
+		str_dict_destroy(&settings_map);
 	}
-	py_dict_destroy(&map);
+	str_dict_destroy(&map);
 }
 
 int find_upstream_branch_point(int local,struct strbuf *upstream, struct hashmap *p4settings )
@@ -809,17 +809,17 @@ int find_upstream_branch_point(int local,struct strbuf *upstream, struct hashmap
 	struct hashmap branch_bydepot_map;
 	struct strbuf parent_commit = STRBUF_INIT;
 	int ret = -1;
-	py_dict_init(&branch_bydepot_map);
+	str_dict_init(&branch_bydepot_map);
 	get_branch_by_depot(local, &branch_bydepot_map);
 	if (IS_LOG_DEBUG_ALLOWED) {
 		LOG_GITP4_DEBUG("Branch depot map: \n");
-		py_dict_print(p4_verbose_debug.fp,&branch_bydepot_map);
+		str_dict_print(p4_verbose_debug.fp,&branch_bydepot_map);
 	}
 	if (find_p4_parent_commit(&parent_commit,p4settings) == 0) {
 		const char *upstream_val;
-		const char *depot_path = py_dict_get_value(p4settings,"depot-paths");
+		const char *depot_path = str_dict_get_value(p4settings,"depot-paths");
 		strbuf_reset(upstream);
-		upstream_val = py_dict_get_value(&branch_bydepot_map,depot_path);
+		upstream_val = str_dict_get_value(&branch_bydepot_map,depot_path);
 		if (upstream_val != NULL)
 			strbuf_addstr(upstream, upstream_val);
 		else
@@ -829,7 +829,7 @@ int find_upstream_branch_point(int local,struct strbuf *upstream, struct hashmap
 	else 
 		ret = -1;
 	strbuf_release(&parent_commit);
-	py_dict_destroy(&branch_bydepot_map);
+	str_dict_destroy(&branch_bydepot_map);
 	return ret;
 }
 
@@ -908,9 +908,9 @@ static void p4_where_cb(struct hashmap *map, void *arg)
 	const char *depot_file = NULL;
 	const char *data_str = NULL;
 	const char *code_str = NULL;
-	depot_file = py_dict_get_value(map, "depotFile");
-	data_str = py_dict_get_value(map, "data");
-	code_str = py_dict_get_value(map, "code");
+	depot_file = str_dict_get_value(map, "depotFile");
+	data_str = str_dict_get_value(map, "data");
+	code_str = str_dict_get_value(map, "code");
 	if (code_str && (strcmp(code_str, "error") == 0)) {
 		strbuf_reset(argout_client_path);
 		return;
@@ -925,7 +925,7 @@ static void p4_where_cb(struct hashmap *map, void *arg)
 		if (strcmp(depot_file+df_len-4,"/...") != 0)
 			return;
 		strbuf_reset(argout_client_path);
-		strbuf_addstr(argout_client_path, py_dict_get_value(map, "path"));
+		strbuf_addstr(argout_client_path, str_dict_get_value(map, "path"));
 	}
 	else if (data_str) {
 		struct strbuf **data_split_list = strbuf_split_str(data_str, ' ', 2);
@@ -1037,7 +1037,7 @@ static void p4usermap_get_id_cb(struct hashmap *map, void *argout)
 {
 	const char *user_str = NULL;
 	struct strbuf *sb_out = (struct strbuf *) argout;
-	user_str = py_dict_get_value(map,"User");
+	user_str = str_dict_get_value(map,"User");
 	if (user_str) {
 		strbuf_reset(sb_out);
 		strbuf_addstr(sb_out, user_str);
@@ -1047,7 +1047,7 @@ static void p4usermap_get_id_cb(struct hashmap *map, void *argout)
 void p4usermap_get_id(struct p4_user_map_t *user_map, struct strbuf *sb_id)
 {
 	struct hashmap p4_dict;
-	py_dict_init(&p4_dict);
+	str_dict_init(&p4_dict);
 	if (!user_map->my_p4_user_id.len) {
 		const char *p4_cmd_list[] = {"user", "-o", NULL};
 		p4_cmd_run(p4_cmd_list, NULL, p4usermap_get_id_cb, &user_map->my_p4_user_id);
@@ -1065,16 +1065,16 @@ static void p4usermap_add_user(struct p4_user_map_t *p4_user_map,
 {
 	if ((!user) || (!email) || (!full_name))
 		return;
-	py_dict_set_key_valf(&p4_user_map->users, user, "%s <%s>", full_name, email);
-	py_dict_set_key_val(&p4_user_map->emails, email, user);
+	str_dict_set_key_valf(&p4_user_map->users, user, "%s <%s>", full_name, email);
+	str_dict_set_key_val(&p4_user_map->emails, email, user);
 }
 
 static void p4usermap_update_users_info_cb(struct hashmap *map, void *arg1)
 {
 	struct p4_user_map_t *p4_user_map = (struct p4_user_map_t *) arg1;
-	const char *user = py_dict_get_value(map, "User");
-	const char *email = py_dict_get_value(map, "Email");
-	const char *full_name = py_dict_get_value(map, "FullName");
+	const char *user = str_dict_get_value(map, "User");
+	const char *email = str_dict_get_value(map, "Email");
+	const char *full_name = str_dict_get_value(map, "FullName");
 	p4usermap_add_user(p4_user_map, user, email, full_name);
 }
 
@@ -1118,16 +1118,16 @@ static int p4usermap_git_config(const char *k, const char *v, void *arg)
 void p4usermap_init(struct p4_user_map_t *user_map)
 {
 	strbuf_init(&user_map->my_p4_user_id, 0);
-	py_dict_init(&user_map->users);
-	py_dict_init(&user_map->emails);
+	str_dict_init(&user_map->users);
+	str_dict_init(&user_map->emails);
 	p4usermap_update_users_info(user_map);
 	git_config(p4usermap_git_config, user_map);
 }
 
 void p4usermap_deinit(struct p4_user_map_t *user_map)
 {
-	py_dict_destroy(&user_map->users);
-	py_dict_destroy(&user_map->emails);
+	str_dict_destroy(&user_map->users);
+	str_dict_destroy(&user_map->emails);
 	strbuf_release(&user_map->my_p4_user_id);
 }
 
@@ -1221,22 +1221,22 @@ static void parse_diff_tree_entry(struct hashmap *map, const char *l)
 	}
 	if (n < 2)
 		die("Error parsing diff line %s", str_tab_list[0]->buf);
-	py_dict_set_key_val(map, "src_mode", str_sp_list[0]->buf);
-	py_dict_set_key_val(map, "dst_mode", str_sp_list[1]->buf);
-	py_dict_set_key_val(map, "src_sha1", str_sp_list[2]->buf);
-	py_dict_set_key_val(map, "dst_sha1", str_sp_list[3]->buf);
+	str_dict_set_key_val(map, "src_mode", str_sp_list[0]->buf);
+	str_dict_set_key_val(map, "dst_mode", str_sp_list[1]->buf);
+	str_dict_set_key_val(map, "src_sha1", str_sp_list[2]->buf);
+	str_dict_set_key_val(map, "dst_sha1", str_sp_list[3]->buf);
 	if (str_tab_list[0]->len < 1)
 		die("Unexpected length for status field");
 	else if (str_tab_list[0]->len > 1)
-		py_dict_set_key_val(map, "status_score", str_tab_list[0]->buf + 1);
+		str_dict_set_key_val(map, "status_score", str_tab_list[0]->buf + 1);
 	strbuf_setlen(str_tab_list[0],1);
-	py_dict_set_key_val(map, "status", str_tab_list[0]->buf);
-	py_dict_set_key_val(map, "src", str_tab_list[1]->buf);
+	str_dict_set_key_val(map, "status", str_tab_list[0]->buf);
+	str_dict_set_key_val(map, "src", str_tab_list[1]->buf);
 	if ((str_tab_list[0]->buf[0] == 'C') ||
 			(str_tab_list[0]->buf[0] == 'R')) {
 		if (n < 5)
 			die("Error parsing diff %s", str_sp_list[4]->buf);
-		py_dict_set_key_val(map, "dst", str_tab_list[4]->buf);
+		str_dict_set_key_val(map, "dst", str_tab_list[4]->buf);
 	}
 	strbuf_list_free(str_tab_list);
 	strbuf_list_free(str_sp_list);
@@ -1261,7 +1261,7 @@ static inline void p4_files_modified_init(struct files_modified_t *fm)
 	string_list_init(&fm->edited, 1);
 	string_list_init(&fm->renamed_copied, 1);
 	string_list_init(&fm->symlinks, 1);
-	py_dict_init(&fm->exec_bit_changed);
+	str_dict_init(&fm->exec_bit_changed);
 	string_list_init(&fm->all_files, 1);
 }
 
@@ -1273,7 +1273,7 @@ static inline void p4_files_modified_destroy(struct files_modified_t *fm)
 	string_list_clear(&fm->edited, 0);
 	string_list_clear(&fm->renamed_copied, 0);
 	string_list_clear(&fm->symlinks, 0);
-	py_dict_destroy(&fm->exec_bit_changed);
+	str_dict_destroy(&fm->exec_bit_changed);
 	string_list_clear(&fm->all_files, 0);
 }
 
@@ -1406,21 +1406,21 @@ static int is_git_mode_exec_changed(const char *src_mode, const char *dst_mode)
 	return (ends_with(src_mode,"755") != ends_with(dst_mode,"755"));
 }
 
-static void py_dict_remove_non_depot_files(struct hashmap *map, const char *depot_path)
+static void str_dict_remove_non_depot_files(struct hashmap *map, const char *depot_path)
 {
 	struct hashmap_iter hm_iter;
 	const keyval_t *kw;
 	struct hashmap maptmp;
-	py_dict_init(&maptmp);
+	str_dict_init(&maptmp);
 	hashmap_iter_init(map, &hm_iter);
 	while ((kw = hashmap_iter_next(&hm_iter))) {
 		if (starts_with(kw->key.buf, "File") && !starts_with(kw->val.buf, depot_path)) {
 			continue;
 		}
-		py_dict_set_key_val(&maptmp, kw->key.buf, kw->val.buf);
+		str_dict_set_key_val(&maptmp, kw->key.buf, kw->val.buf);
 	}
 	SWAP(*map, maptmp);
-	py_dict_destroy(&maptmp);
+	str_dict_destroy(&maptmp);
 }
 
 static void strbuf_add_p4change_multiple_fields(struct strbuf *out, struct hashmap *map, const char *prefix_field, const char *output_field_name)
@@ -1441,7 +1441,7 @@ static void strbuf_add_p4change_field(struct strbuf *out, struct hashmap *map, c
 	const keyval_t *kw;
 	struct string_list field_line_list = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	kw = py_dict_get_kw(map, field);
+	kw = str_dict_get_kw(map, field);
 	if (!kw)
 		return;
 	string_list_split(&field_line_list, kw->val.buf, '\n', -1);
@@ -1481,11 +1481,11 @@ static void strbuf_add_p4change(struct strbuf *out, struct hashmap *map)
 static void get_p4change_cb(struct hashmap *map, void *arg)
 {
 	struct hashmap *dst = (struct hashmap *) arg;
-	const char *codestr=py_dict_get_value(map, "code");
+	const char *codestr=str_dict_get_value(map, "code");
 	if (!codestr)
 		return;
 	if (!strcmp(codestr, "stat"))
-		py_dict_copy(dst, map);
+		str_dict_copy(dst, map);
 }
 
 static void get_p4change(struct hashmap *change_entry, unsigned int changelist)
@@ -1496,7 +1496,7 @@ static void get_p4change(struct hashmap *change_entry, unsigned int changelist)
 	if (changelist)
 		argv_array_pushf(&p4args, "%u", changelist);
 	p4_cmd_run(p4args.argv, NULL, get_p4change_cb, change_entry);
-	if (!py_dict_get_value(change_entry, "code"))
+	if (!str_dict_get_value(change_entry, "code"))
 		die("Failed to decode output of p4 change -o");
 	argv_array_clear(&p4args);
 }
@@ -1509,16 +1509,16 @@ void dump_p4_log(FILE *fp, const char *commit_id, unsigned int changelist)
 	struct hashmap p4change;
 	struct hashmap p4settings;
 	const char *depot_path = NULL;
-	py_dict_init(&p4change);
-	py_dict_init(&p4settings);
+	str_dict_init(&p4change);
+	str_dict_init(&p4settings);
 	if (find_upstream_branch_point(0, &upstream, &p4settings) < 0)
 		die("Error findind upstream");
-	depot_path = py_dict_get_value(&p4settings, "depot-paths");
+	depot_path = str_dict_get_value(&p4settings, "depot-paths");
 	extract_log_message(commit_id, &description);
 	strbuf_trim(&description);
 	get_p4change(&p4change, changelist);
-	py_dict_remove_non_depot_files(&p4change, depot_path);
-	py_dict_set_key_val(&p4change, "Description", description.buf);
+	str_dict_remove_non_depot_files(&p4change, depot_path);
+	str_dict_set_key_val(&p4change, "Description", description.buf);
 	strbuf_add_p4change(&outlog, &p4change);
 	strbuf_write(&outlog, fp);
 	if (IS_LOG_DEBUG_ALLOWED) {
@@ -1527,8 +1527,8 @@ void dump_p4_log(FILE *fp, const char *commit_id, unsigned int changelist)
 	strbuf_release(&description);
 	strbuf_release(&outlog);
 	strbuf_release(&upstream);
-	py_dict_destroy(&p4change);
-	py_dict_destroy(&p4settings);
+	str_dict_destroy(&p4change);
+	str_dict_destroy(&p4settings);
 }
 
 static void p4submit_apply_cb(struct strbuf *l, void *arg)
@@ -1542,39 +1542,39 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	const char *src_mode, *dst_mode;
 	const char *src_sha1, *dst_sha1;
 	const char *cli_path = p4submit_options.client_path.buf;
-	py_dict_init(&map);
+	str_dict_init(&map);
 	parse_diff_tree_entry(&map, l->buf);
-	val = py_dict_get_value(&map, "status");
+	val = str_dict_get_value(&map, "status");
 	if (val && val[0] && val[1] == '\0')
 		modifier = val[0];
 	else
 		die("Wrong diff line parsed (status) %s",l->buf);
-	val = py_dict_get_value(&map, "src");
+	val = str_dict_get_value(&map, "src");
 	if (!val)
 		die("Wrong diff line parsed (src) %s",l->buf);
 	strbuf_addstr(&src_path, val);
-	val = py_dict_get_value(&map, "dst");
+	val = str_dict_get_value(&map, "dst");
 	if (val)
 		strbuf_addstr(&dst_path, val);
-	src_sha1 = py_dict_get_value(&map, "src_sha1");
-	dst_sha1 = py_dict_get_value(&map, "dst_sha1");
-	src_mode = py_dict_get_value(&map, "src_mode");
-	dst_mode = py_dict_get_value(&map, "dst_mode");
+	src_sha1 = str_dict_get_value(&map, "src_sha1");
+	dst_sha1 = str_dict_get_value(&map, "dst_sha1");
+	src_mode = str_dict_get_value(&map, "src_mode");
+	dst_mode = str_dict_get_value(&map, "dst_mode");
 	if (IS_LOG_DEBUG_ALLOWED) {
 		LOG_GITP4_DEBUG("Converted git info to dict: ");
-		py_dict_print(p4_verbose_debug.fp, &map);
+		str_dict_print(p4_verbose_debug.fp, &map);
 	}
 	switch (modifier) {
 	case 'M':
 		p4_sync_file(cli_path, src_path.buf);
 		p4_edit(cli_path, src_path.buf,0);
 		if (is_git_mode_exec_changed(src_mode, dst_mode))
-			py_dict_set_key_val(&files_to_update->exec_bit_changed, src_path.buf, dst_mode);
+			str_dict_set_key_val(&files_to_update->exec_bit_changed, src_path.buf, dst_mode);
 		string_list_insert(&files_to_update->edited, src_path.buf);
 		break;
 	case 'A':
 		string_list_insert(&files_to_update->added, src_path.buf);
-		py_dict_set_key_val(&files_to_update->exec_bit_changed, src_path.buf, dst_mode);
+		str_dict_set_key_val(&files_to_update->exec_bit_changed, src_path.buf, dst_mode);
 		if (0120000 == strtol(dst_mode, NULL, 8))
 			string_list_insert(&files_to_update->symlinks, src_path.buf);
 		string_list_remove(&files_to_update->deleted, src_path.buf, 0);
@@ -1594,7 +1594,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 		if (is_git_mode_exec_changed(src_mode, dst_mode)) {
 			p4_edit(cli_path, dst_path->buf);
 			string_list_remove(&files_to_update->renamed_copied, dst_path->buf);
-			py_dict_set_key_val(&files_to_update->exec_bit_changed, dst_path->buf, dst_mode);
+			str_dict_set_key_val(&files_to_update->exec_bit_changed, dst_path->buf, dst_mode);
 		}
 #ifdef GIT_WINDOWS_NATIVE
 		chmod(dst_path->buf, S_IWRITE);
@@ -1615,7 +1615,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 		die("Unknown modifier %c for %s", modifier, src_path.buf);
 		break;
 	}
-	py_dict_destroy(&map);
+	str_dict_destroy(&map);
 	strbuf_release(&dst_path);
 	strbuf_release(&src_path);
 }
@@ -1764,16 +1764,16 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		strbuf_addf(&p4submit_options.branch, "%s",branch);
 	}
 	if (IS_LOG_DEBUG_ALLOWED) {
-		py_dict_init(&map);
+		str_dict_init(&map);
 		p4_local_branches_in_git(&map);
 		LOG_GITP4_DEBUG("Local:\n");
-		py_dict_print(p4_verbose_debug.fp, &map);
-		py_dict_destroy(&map);
-		py_dict_init(&map);
+		str_dict_print(p4_verbose_debug.fp, &map);
+		str_dict_destroy(&map);
+		str_dict_init(&map);
 		p4_remote_branches_in_git(&map);
 		LOG_GITP4_DEBUG("Remotes:\n");
-		py_dict_print(p4_verbose_debug.fp, &map);
-		py_dict_destroy(&map);
+		str_dict_print(p4_verbose_debug.fp, &map);
+		str_dict_destroy(&map);
 	}
 	if (argc == 0) {
 		if (current_git_branch(&strb_master) != 0)
@@ -1789,20 +1789,20 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	do {
 		struct strbuf base_commit = STRBUF_INIT;
 		struct hashmap dict_map;
-		py_dict_init(&dict_map);
+		str_dict_init(&dict_map);
 		if (find_upstream_branch_point(0, &base_commit, &dict_map) == 0) {
 			strbuf_reset(&p4submit_options.depot_path);
-			strbuf_addf(&p4submit_options.depot_path,"%s", py_dict_get_value(&dict_map,"depot-paths"));
+			strbuf_addf(&p4submit_options.depot_path,"%s", str_dict_get_value(&dict_map,"depot-paths"));
 			if (p4submit_options.base_commit.len == 0)
 				strbuf_addbuf(&p4submit_options.base_commit, &base_commit);
 			LOG_GITP4_DEBUG("Upstream: %s\n",base_commit.buf);
 			if (IS_LOG_DEBUG_ALLOWED)
-				py_dict_print(p4_verbose_debug.fp, &dict_map);
+				str_dict_print(p4_verbose_debug.fp, &dict_map);
 			LOG_GITP4_DEBUG("Upstream: %s\n",p4submit_options.base_commit.buf);
 			LOG_GITP4_DEBUG("depot-path: %s\n", p4submit_options.depot_path.buf);
 		}
 		strbuf_release(&base_commit);
-		py_dict_destroy(&dict_map);
+		str_dict_destroy(&dict_map);
 	} while(0);
 
 	if (p4submit_options.update_shelve_cl)
@@ -1862,7 +1862,7 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 
 static const char *p4usermap_get_user_by_email(struct p4_user_map_t *p4_user_map, const char *email)
 {
-	return py_dict_get_value(&p4submit_options.p4_user_map.emails,email);
+	return str_dict_get_value(&p4submit_options.p4_user_map.emails,email);
 }
 
 static void p4submit_user_for_commit(const char *commit, struct strbuf *user, struct strbuf *email)
@@ -2086,7 +2086,7 @@ struct hashmap *py_marshal_parse(FILE *fp)
 				else
 				{
 					keyval_append_val_f(kw,fp, len);
-					py_dict_put_kw(map, kw);
+					str_dict_put_kw(map, kw);
 					kw = NULL;
 					state = PY_MARSHAL_WAIT_FOR_KEY;
 				}
@@ -2099,7 +2099,7 @@ struct hashmap *py_marshal_parse(FILE *fp)
 				assert(state == PY_MARSHAL_WAIT_FOR_VAL);
 				fread_int32_t(fp,&vi32);
 				strbuf_addf(&kw->val,"%d",vi32);
-				py_dict_put_kw(map, kw);
+				str_dict_put_kw(map, kw);
 				kw = NULL;
 				state = PY_MARSHAL_WAIT_FOR_KEY;
 				break;
@@ -2112,7 +2112,7 @@ struct hashmap *py_marshal_parse(FILE *fp)
 				// Do Nothing
 				assert(NULL == map); 
 				map = malloc(sizeof(struct hashmap));
-				py_dict_init(map);
+				str_dict_init(map);
 				break;
 			default:
 				LOG_GITP4_CRITICAL("Not supported: %d\n",c);
@@ -2123,7 +2123,7 @@ struct hashmap *py_marshal_parse(FILE *fp)
 	assert(NULL == kw);
 _leave:
 	if (NULL != map) {
-		py_dict_destroy(map);
+		str_dict_destroy(map);
 		free(map);
 	}
 	return NULL;
