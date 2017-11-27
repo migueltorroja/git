@@ -7,6 +7,7 @@
 #include "builtin.h"
 #include "strbuf.h"
 #include "hashmap.h"
+#include "list.h"
 #include "parse-options.h"
 #include "gettext.h"
 #include "config.h"
@@ -78,7 +79,6 @@ void p4_verbose_init(struct p4_verbose_debug_t *p4verbose, int level, FILE *fp)
 
 
 
-__attribute__((format (vprintf,2,3)))
 static void p4_verbose_vprintf(int loglevel, const char *fmt, va_list ap)
 {
 	if (loglevel > p4_verbose_debug.verbose_level)
@@ -1920,13 +1920,178 @@ static int p4submit_git_config(const char *k, const char *v, void *cb)
 	return 0;
 }
 
+
+struct depot_file_t
+{
+	struct strbuf depot_path_file;
+	unsigned int chg_rev;
+	int is_revision;
+	struct list_head lhead;
+};
+
+static void depot_file_init(struct depot_file_t *p)
+{
+	strbuf_init(&p->depot_path_file, 0);
+	p->chg_rev = 0;
+	p->is_revision = 0;
+}
+
+
+static void depot_file_printf(FILE *fp, struct depot_file_t *p)
+{
+	fprintf(fp, "%s", p->depot_path_file.buf);
+	if (p->is_revision)
+		fprintf(fp, "#");
+	else
+		fprintf(fp, "@");
+	fprintf(fp, "%d\n",p->chg_rev);
+}
+
+static void depot_file_destroy(struct depot_file_t *p)
+{
+	strbuf_release(&p->depot_path_file);
+}
+
+static void list_depot_files_add(struct list_head *list_depot_files, const char *depot_file, unsigned int chg_rev, int is_revision)
+{
+	struct depot_file_t *df = malloc(sizeof(struct depot_file_t));
+	depot_file_init(df);
+	strbuf_addstr(&df->depot_path_file, depot_file);
+	df->chg_rev = chg_rev;
+	df->is_revision = is_revision;
+	list_add_tail(&df->lhead, list_depot_files);
+}
+
+static void list_depot_files_destroy(struct list_head *list_depot_files)
+{
+	struct list_head *pos, *p;
+	list_for_each_safe(pos, p, list_depot_files) {
+		struct depot_file_t *dp;
+		list_del(pos);
+		dp = list_entry(pos, struct depot_file_t, lhead);
+		depot_file_destroy(dp);
+		free(dp);
+	}
+}
+
+static void list_depot_files_printf(FILE *fp, struct list_head *list_depot_files)
+{
+	struct list_head *pos;
+	list_for_each(pos, list_depot_files) {
+		struct depot_file_t *dp;
+		dp = list_entry(pos, struct depot_file_t, lhead);
+		depot_file_printf(fp, dp);
+	}
+}
+
+static void argv_array_push_depot_files(struct argv_array *args, struct list_head *list_depot_files)
+{
+	struct list_head *pos;
+	list_for_each(pos, list_depot_files) {
+		struct depot_file_t *dp;
+		dp = list_entry(pos, struct depot_file_t, lhead);
+		if (dp->is_revision)
+			argv_array_pushf(args,"%s#%d", dp->depot_path_file.buf, dp->chg_rev);
+		else
+			argv_array_pushf(args,"%s@=%d", dp->depot_path_file.buf, dp->chg_rev);
+	}
+}
+
+
+
+
+struct depot_change_range_t {
+	struct strbuf depot_path;
+	unsigned int start_changelist;
+	unsigned int end_changelist;
+};
+
+#define DEPOT_CHANGE_RANGE_INIT { STRBUF_INIT, 0, 0}
+
+static void depot_change_range_destroy(struct depot_change_range_t *ptr)
+{
+	strbuf_release(&ptr->depot_path);
+}
+
+static int p4format_patch_parse(int argc, const char **argv, struct depot_change_range_t *chrng)
+{
+	if (argc < 2) {
+		die ("Failed to parse string, no string passed");
+		return -1;
+	}
+	strbuf_addstr(&chrng->depot_path, argv[0]);
+	chrng->start_changelist = atoi(argv[1]);
+	if (argc > 2)
+		chrng->end_changelist = atoi(argv[2]);
+	else
+		chrng->end_changelist = chrng->start_changelist;
+	return 0;
+}
+
+static void print_change_range(FILE *fp, struct depot_change_range_t *chrng)
+{
+	fprintf(fp, "depot: %s\n",chrng->depot_path.buf);
+	fprintf(fp, "\tfrom: % 9d to: % 9d\n", chrng->start_changelist, chrng->end_changelist);
+}
+
+static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
+{
+	struct list_head *dpotlist = (struct list_head *) arg;
+	struct hashmap_iter hm_iter;
+	const keyval_t *kw;
+	const char *depotfile_str = "depotFile";
+	const int depotfile_len = strlen(depotfile_str);
+	unsigned int changelist = atoi(str_dict_get_value(map, "change"));
+	hashmap_iter_init(map, &hm_iter);
+	while ((kw = hashmap_iter_next(&hm_iter))) {
+		if (starts_with(kw->key.buf, depotfile_str)) {
+			const char *dp_suffix = kw->key.buf + depotfile_len;
+			unsigned int rev = 0;
+			struct strbuf sb_key = STRBUF_INIT;
+			strbuf_addf(&sb_key, "rev%s",dp_suffix);
+			rev = atoi(str_dict_get_value(map, sb_key.buf));
+			list_depot_files_add(dpotlist, kw->val.buf, rev, 1);
+			strbuf_release(&sb_key);
+		}
+	}
+}
+
+static void add_list_files_from_changelist(struct list_head *dpfiles, struct depot_change_range_t *chrng)
+{
+	struct argv_array p4args = ARGV_ARRAY_INIT;
+	argv_array_push(&p4args, "describe");
+	argv_array_push(&p4args, "-S");
+	argv_array_pushf(&p4args, "%d", chrng->start_changelist);
+	p4_cmd_run(p4args.argv, NULL, add_list_files_from_changelist_cb, dpfiles);
+	argv_array_clear(&p4args);
+}
+
+void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
+{
+	struct option options[] = {
+		OPT_END()
+	};
+	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
+	struct list_head depot_files = LIST_HEAD_INIT(depot_files);
+	argc = parse_options(argc, argv, NULL, options, NULL, 0);
+	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
+		die("Error parsing changelists");
+	}
+	print_change_range(stderr, &chg_range);
+	add_list_files_from_changelist(&depot_files, &chg_range);
+	list_depot_files_printf(stderr, &depot_files);
+	list_depot_files_destroy(&depot_files);
+	depot_change_range_destroy(&chg_range);
+
+}
+
 void p4submit_cmd_init(struct command_t *pcmd)
 {
 	strbuf_init(&pcmd->strb_usage,0);
 	pcmd->needs_git = 0;
 	pcmd->verbose = 0;
 	pcmd->run_fn = p4submit_cmd_run;
-	pcmd->deinit_fn = p4submit_cmd_deinit;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
 	pcmd->data = NULL;
 	memset(&p4submit_options, 0, sizeof(p4submit_options));
 	strbuf_init(&p4submit_options.base_commit, 0);
@@ -1945,6 +2110,24 @@ void p4shelve_cmd_init(struct command_t *pcmd)
 }
 
 
+
+void p4format_patch_cmd_init(struct command_t *pcmd)
+{
+	strbuf_init(&pcmd->strb_usage,0);
+	pcmd->needs_git = 0;
+	pcmd->verbose = 0;
+	pcmd->run_fn = p4format_patch_cmd_run;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->data = NULL;
+	memset(&p4submit_options, 0, sizeof(p4submit_options));
+	strbuf_init(&p4submit_options.base_commit, 0);
+	strbuf_init(&p4submit_options.branch, 0);
+	strbuf_init(&p4submit_options.depot_path, 0);
+	strbuf_init(&p4submit_options.client_path, 0);
+	strbuf_init(&p4submit_options.diff_opts, 0);
+	git_config(p4submit_git_config,NULL);
+	p4usermap_init(&p4submit_options.p4_user_map);
+}
 
 keyval_t *keyval_init(keyval_t *kw)
 {
@@ -2139,6 +2322,7 @@ const command_list_t cmd_lst[] =
 	{"debug", p4debug_cmd_init},
 	{"submit", p4submit_cmd_init},
 	{"shelve", p4shelve_cmd_init},
+	{"format-patch", p4format_patch_cmd_init},
 };
 
 void print_usage(FILE *fp, const char *progname)
