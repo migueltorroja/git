@@ -218,6 +218,20 @@ static const char *str_dict_get_value(struct hashmap *map, const char *str)
 	return kw->val.buf;
 }
 
+__attribute__((format (printf,2,3)))
+static const char *str_dict_get_valuef(struct hashmap *map, const char *fmt, ...)
+{
+	struct strbuf key = STRBUF_INIT;
+	va_list ap;
+	const char *r = NULL;
+	va_start(ap, fmt);
+	strbuf_vaddf(&key, fmt, ap);
+	r = str_dict_get_value(map, key.buf);
+	strbuf_release(&key);
+	va_end(ap);
+	return r;
+}
+
 static void str_dict_print(FILE *fp, struct hashmap *map)
 {
 	if (NULL == fp)
@@ -1929,6 +1943,13 @@ struct depot_file_t
 	struct list_head lhead;
 };
 
+struct depot_file_pair_t
+{
+	struct depot_file_t a;
+	struct depot_file_t b;
+	struct list_head lhead;
+};
+
 static void depot_file_init(struct depot_file_t *p)
 {
 	strbuf_init(&p->depot_path_file, 0);
@@ -1936,6 +1957,21 @@ static void depot_file_init(struct depot_file_t *p)
 	p->is_revision = 0;
 }
 
+static void depot_file_set(struct depot_file_t *p, const char *str, unsigned int chg_rev, unsigned int is_revision)
+{
+	strbuf_reset(&p->depot_path_file);
+	strbuf_addstr(&p->depot_path_file, str);
+	p->chg_rev = chg_rev;
+	p->is_revision = is_revision;
+}
+
+static void depot_file_copy(struct depot_file_t *dst, struct depot_file_t *src)
+{
+	strbuf_reset(&dst->depot_path_file);
+	strbuf_addbuf(&dst->depot_path_file, &src->depot_path_file);
+	dst->chg_rev = src->chg_rev;
+	dst->is_revision = src->is_revision;
+}
 
 static void depot_file_printf(FILE *fp, struct depot_file_t *p)
 {
@@ -1944,7 +1980,7 @@ static void depot_file_printf(FILE *fp, struct depot_file_t *p)
 		fprintf(fp, "#");
 	else
 		fprintf(fp, "@");
-	fprintf(fp, "%d\n",p->chg_rev);
+	fprintf(fp, "%d",p->chg_rev);
 }
 
 static void depot_file_destroy(struct depot_file_t *p)
@@ -1981,6 +2017,7 @@ static void list_depot_files_printf(FILE *fp, struct list_head *list_depot_files
 		struct depot_file_t *dp;
 		dp = list_entry(pos, struct depot_file_t, lhead);
 		depot_file_printf(fp, dp);
+		fprintf(fp, "\n");
 	}
 }
 
@@ -1998,7 +2035,58 @@ static void argv_array_push_depot_files(struct argv_array *args, struct list_hea
 }
 
 
+static void depot_file_pair_init(struct depot_file_pair_t *dp)
+{
+	depot_file_init(&dp->a);
+	depot_file_init(&dp->b);
+}
 
+static void depot_file_pair_printf(FILE *fp, struct depot_file_pair_t *dp)
+{
+	fprintf(fp, "diff: ");
+	depot_file_printf(fp, &dp->a);
+	fprintf(fp, " ");
+	depot_file_printf(fp, &dp->b);
+}
+
+static void	depot_file_pair_destroy(struct depot_file_pair_t *dp)
+{
+	depot_file_destroy(&dp->a);
+	depot_file_destroy(&dp->b);
+}
+
+static void list_depot_files_pair_printf(FILE *fp, struct list_head *list_depot_files_pair)
+{
+	struct list_head *pos;
+	list_for_each(pos, list_depot_files_pair) {
+		struct depot_file_pair_t *dp;
+		dp = list_entry(pos, struct depot_file_pair_t, lhead);
+		depot_file_pair_printf(fp, dp);
+		fprintf(fp, "\n");
+	}
+}
+
+static void list_depot_files_pair_add(struct list_head *list_depot_files_pair, struct depot_file_t *a, struct depot_file_t *b)
+{
+	struct depot_file_pair_t *df = malloc(sizeof(struct depot_file_pair_t));
+	depot_file_pair_init(df);
+	depot_file_copy(&df->a, a);
+	depot_file_copy(&df->b, b);
+	list_add_tail(&df->lhead, list_depot_files_pair);
+}
+
+
+static void list_depot_files_pair_destroy(struct list_head *list_depot_files)
+{
+	struct list_head *pos, *p;
+	list_for_each_safe(pos, p, list_depot_files) {
+		struct depot_file_pair_t *dp;
+		list_del(pos);
+		dp = list_entry(pos, struct depot_file_pair_t, lhead);
+		depot_file_pair_destroy(dp);
+		free(dp);
+	}
+}
 
 struct depot_change_range_t {
 	struct strbuf depot_path;
@@ -2042,16 +2130,36 @@ static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
 	const char *depotfile_str = "depotFile";
 	const int depotfile_len = strlen(depotfile_str);
 	unsigned int changelist = atoi(str_dict_get_value(map, "change"));
+	int is_shelved = str_dict_get_value(map, "shelved")!=NULL;
 	hashmap_iter_init(map, &hm_iter);
 	while ((kw = hashmap_iter_next(&hm_iter))) {
 		if (starts_with(kw->key.buf, depotfile_str)) {
 			const char *dp_suffix = kw->key.buf + depotfile_len;
 			unsigned int rev = 0;
-			struct strbuf sb_key = STRBUF_INIT;
-			strbuf_addf(&sb_key, "rev%s",dp_suffix);
-			rev = atoi(str_dict_get_value(map, sb_key.buf));
-			list_depot_files_add(dpotlist, kw->val.buf, rev, 1);
-			strbuf_release(&sb_key);
+			struct depot_file_t a;
+			struct depot_file_t b;
+			const char *action = str_dict_get_valuef(map, "action%s", dp_suffix);
+			depot_file_init(&a);
+			depot_file_init(&b);
+			rev = atoi(str_dict_get_valuef(map, "rev%s", dp_suffix));
+			if (is_shelved) {
+				depot_file_set(&b, kw->val.buf, changelist, 0);
+			}
+			else {
+				depot_file_set(&b, kw->val.buf, rev, 1);
+			}
+			if (!strcmp(action,"edit")) {
+				depot_file_set(&a, kw->val.buf, rev-1, 1);
+			}
+			else if (!strcmp(action, "delete")) {
+				SWAP(a,b);
+			}
+			else if (strcmp(action, "add") && strcmp(action, "branch")) {
+				die("Action %s not supported", action);
+			}
+			list_depot_files_pair_add(dpotlist, &a, &b);
+			depot_file_destroy(&a);
+			depot_file_destroy(&b);
 		}
 	}
 }
@@ -2079,8 +2187,8 @@ void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	}
 	print_change_range(stderr, &chg_range);
 	add_list_files_from_changelist(&depot_files, &chg_range);
-	list_depot_files_printf(stderr, &depot_files);
-	list_depot_files_destroy(&depot_files);
+	list_depot_files_pair_printf(stderr, &depot_files);
+	list_depot_files_pair_destroy(&depot_files);
 	depot_change_range_destroy(&chg_range);
 
 }
@@ -2119,14 +2227,6 @@ void p4format_patch_cmd_init(struct command_t *pcmd)
 	pcmd->run_fn = p4format_patch_cmd_run;
 	pcmd->deinit_fn = p4_cmd_default_deinit;
 	pcmd->data = NULL;
-	memset(&p4submit_options, 0, sizeof(p4submit_options));
-	strbuf_init(&p4submit_options.base_commit, 0);
-	strbuf_init(&p4submit_options.branch, 0);
-	strbuf_init(&p4submit_options.depot_path, 0);
-	strbuf_init(&p4submit_options.client_path, 0);
-	strbuf_init(&p4submit_options.diff_opts, 0);
-	git_config(p4submit_git_config,NULL);
-	p4usermap_init(&p4submit_options.p4_user_map);
 }
 
 keyval_t *keyval_init(keyval_t *kw)
