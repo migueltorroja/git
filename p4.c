@@ -1950,6 +1950,38 @@ struct depot_file_pair_t
 	struct list_head lhead;
 };
 
+
+static void p4_print_cb(struct hashmap *map, void *arg)
+{
+	FILE *fp = (FILE *) arg;
+	const keyval_t *kw = NULL;
+	if (!strcmp(str_dict_get_value(map, "code"), "stat")) {
+		fprintf(fp, "=== %s@=%s ===\n", str_dict_get_value(map, "depotFile"), str_dict_get_value(map, "change"));
+		return;
+	}
+	else if (strcmp(str_dict_get_value(map, "code"), "text")) {
+		return;
+	}
+	kw = str_dict_get_kw(map, "data");
+	if (!kw) {
+		die("Unexpected print output format");
+	}
+	fprintf(fp, "%.*s", (int) kw->val.len, kw->val.buf);
+}
+
+
+static int p4_print(const struct depot_file_t *p4filedesc)
+{
+	struct argv_array p4args = ARGV_ARRAY_INIT;
+	argv_array_push(&p4args, "print");
+	if (p4filedesc->is_revision)
+		argv_array_pushf(&p4args, "%s#%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+	else
+		argv_array_pushf(&p4args, "%s@=%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+	p4_cmd_run(p4args.argv, NULL, p4_print_cb, stdout);
+	argv_array_clear(&p4args);
+}
+
 static void depot_file_init(struct depot_file_t *p)
 {
 	strbuf_init(&p->depot_path_file, 0);
@@ -2047,6 +2079,8 @@ static void depot_file_pair_printf(FILE *fp, struct depot_file_pair_t *dp)
 	depot_file_printf(fp, &dp->a);
 	fprintf(fp, " ");
 	depot_file_printf(fp, &dp->b);
+	p4_print(&dp->a);
+	p4_print(&dp->b);
 }
 
 static void	depot_file_pair_destroy(struct depot_file_pair_t *dp)
