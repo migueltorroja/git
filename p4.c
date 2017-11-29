@@ -83,8 +83,6 @@ static void p4_verbose_vprintf(int loglevel, const char *fmt, va_list ap)
 {
 	if (loglevel > p4_verbose_debug.verbose_level)
 		return;
-	if (p4_verbose_debug.verbose_level)
-		return;
 	vfprintf(p4_verbose_debug.fp, fmt, ap);
 }
 
@@ -1951,26 +1949,55 @@ struct depot_file_pair_t
 };
 
 
+
+struct dump_file_state
+{
+	struct strbuf prefix_depot;
+	struct strbuf dirname;
+	FILE *fp;
+};
+
+
 static void p4_print_cb(struct hashmap *map, void *arg)
 {
-	FILE *fp = (FILE *) arg;
+	struct dump_file_state *dstate = (struct dump_file_state*) arg;
 	const keyval_t *kw = NULL;
+	if (IS_LOG_DEBUG_ALLOWED)
+		str_dict_print(p4_verbose_debug.fp, map);
 	if (!strcmp(str_dict_get_value(map, "code"), "stat")) {
-		fprintf(fp, "=== %s@=%s ===\n", str_dict_get_value(map, "depotFile"), str_dict_get_value(map, "change"));
+		struct strbuf filename = STRBUF_INIT;
+		const char *path_in_subdir = NULL;
+		strbuf_addstr(&filename, str_dict_get_value(map, "depotFile"));
+		if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
+			strbuf_remove(&filename, 0, dstate->prefix_depot.len);
+			if (!ends_with(dstate->dirname.buf, "/"))
+				strbuf_insert(&filename, 0, "/", 1);
+			strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
+			safe_create_leading_directories_const(filename.buf);
+			dstate->fp = fopen(filename.buf, "w");
+			if (!dstate->fp)
+				die("Error creating file %s", filename.buf);
+			LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
+		}
+		strbuf_release(&filename);
 		return;
 	}
 	else if (strcmp(str_dict_get_value(map, "code"), "text")) {
 		return;
 	}
+	if (!dstate->fp)
+		return;
 	kw = str_dict_get_kw(map, "data");
 	if (!kw) {
 		die("Unexpected print output format");
 	}
-	fprintf(fp, "%.*s", (int) kw->val.len, kw->val.buf);
+	if (!kw->val.len)
+		return;
+	if (fwrite(kw->val.buf, kw->val.len, 1, dstate->fp) != 1)
+		die("Block not written");
 }
 
-
-static int p4_print(const struct depot_file_t *p4filedesc)
+static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4filedesc)
 {
 	struct argv_array p4args = ARGV_ARRAY_INIT;
 	argv_array_push(&p4args, "print");
@@ -1978,8 +2005,9 @@ static int p4_print(const struct depot_file_t *p4filedesc)
 		argv_array_pushf(&p4args, "%s#%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
 	else
 		argv_array_pushf(&p4args, "%s@=%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
-	p4_cmd_run(p4args.argv, NULL, p4_print_cb, stdout);
+	p4_cmd_run(p4args.argv, NULL, p4_print_cb, dstate);
 	argv_array_clear(&p4args);
+	return 0;
 }
 
 static void depot_file_init(struct depot_file_t *p)
@@ -2073,14 +2101,25 @@ static void depot_file_pair_init(struct depot_file_pair_t *dp)
 	depot_file_init(&dp->b);
 }
 
-static void depot_file_pair_printf(FILE *fp, struct depot_file_pair_t *dp)
+static void depot_file_pair_dump(const char *depot_prefix, const char *dst_dir, struct depot_file_pair_t *dp)
 {
-	fprintf(fp, "diff: ");
-	depot_file_printf(fp, &dp->a);
-	fprintf(fp, " ");
-	depot_file_printf(fp, &dp->b);
-	p4_print(&dp->a);
-	p4_print(&dp->b);
+	struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT, NULL};
+	strbuf_addstr(&d_state.prefix_depot, depot_prefix);
+	strbuf_addf(&d_state.dirname, "%s/a", dst_dir);
+	p4_dump(&d_state, &dp->a);
+	if (d_state.fp) {
+		fclose(d_state.fp);
+		d_state.fp = NULL;
+	}
+	strbuf_reset(&d_state.dirname);
+	strbuf_addf(&d_state.dirname, "%s/b", dst_dir);
+	p4_dump(&d_state, &dp->b);
+	if (d_state.fp) {
+		fclose(d_state.fp);
+		d_state.fp = NULL;
+	}
+	strbuf_release(&d_state.dirname);
+	strbuf_release(&d_state.prefix_depot);
 }
 
 static void	depot_file_pair_destroy(struct depot_file_pair_t *dp)
@@ -2089,14 +2128,13 @@ static void	depot_file_pair_destroy(struct depot_file_pair_t *dp)
 	depot_file_destroy(&dp->b);
 }
 
-static void list_depot_files_pair_printf(FILE *fp, struct list_head *list_depot_files_pair)
+static void list_depot_files_pair_dump(const char *depot_prefix, const char *dest_dir, struct list_head *list_depot_files_pair)
 {
 	struct list_head *pos;
 	list_for_each(pos, list_depot_files_pair) {
 		struct depot_file_pair_t *dp;
 		dp = list_entry(pos, struct depot_file_pair_t, lhead);
-		depot_file_pair_printf(fp, dp);
-		fprintf(fp, "\n");
+		depot_file_pair_dump(depot_prefix, dest_dir, dp);
 	}
 }
 
@@ -2216,15 +2254,23 @@ void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	};
 	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
 	struct list_head depot_files = LIST_HEAD_INIT(depot_files);
+	struct strbuf tmpdir_name = STRBUF_INIT;
+	const char *tmpdir = getenv("TMPDIR");
+	if (!tmpdir)
+		tmpdir = "/tmp";
 	argc = parse_options(argc, argv, NULL, options, NULL, 0);
 	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
 		die("Error parsing changelists");
 	}
 	print_change_range(stderr, &chg_range);
 	add_list_files_from_changelist(&depot_files, &chg_range);
-	list_depot_files_pair_printf(stderr, &depot_files);
+	strbuf_addf(&tmpdir_name, "%s/diff_XXXXXX", tmpdir);
+	if (!mkdtemp(tmpdir_name.buf))
+		die("Error createing temp directory");
+	list_depot_files_pair_dump(chg_range.depot_path.buf, tmpdir_name.buf, &depot_files);
 	list_depot_files_pair_destroy(&depot_files);
 	depot_change_range_destroy(&chg_range);
+	strbuf_release(&tmpdir_name);
 
 }
 
