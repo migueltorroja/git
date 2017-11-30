@@ -2247,6 +2247,30 @@ static void add_list_files_from_changelist(struct list_head *dpfiles, struct dep
 	argv_array_clear(&p4args);
 }
 
+static int p4format_patch_diff(const char *dir, const char *left, const char *right, const char *patch_name)
+{
+	struct child_process child_git = CHILD_PROCESS_INIT;
+	int fd;
+	int ret;
+	fd = open(patch_name, O_CREAT | O_WRONLY, 0666);
+	if (fd < 0)
+		die("Error creating the file %s (%d)", patch_name, errno);
+	child_git.git_cmd = 1;
+	child_git.out = fd;
+	child_git.dir = dir;
+	argv_array_push(&child_git.args, "diff");
+	argv_array_push(&child_git.args, "--no-index");
+	argv_array_push(&child_git.args, "--no-prefix");
+	argv_array_push(&child_git.args, "--patch-with-stat");
+	argv_array_push(&child_git.args, left);
+	argv_array_push(&child_git.args, right);
+	if (start_command(&child_git))
+		die("cannot start git diff");
+	ret = finish_command(&child_git);
+	close(fd);
+	return ret;
+}
+
 void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 {
 	struct option options[] = {
@@ -2255,6 +2279,7 @@ void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
 	struct list_head depot_files = LIST_HEAD_INIT(depot_files);
 	struct strbuf tmpdir_name = STRBUF_INIT;
+	struct strbuf patch_name = STRBUF_INIT;
 	const char *tmpdir = getenv("TMPDIR");
 	if (!tmpdir)
 		tmpdir = "/tmp";
@@ -2268,9 +2293,12 @@ void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	if (!mkdtemp(tmpdir_name.buf))
 		die("Error createing temp directory");
 	list_depot_files_pair_dump(chg_range.depot_path.buf, tmpdir_name.buf, &depot_files);
+	strbuf_addf(&patch_name, "CL%d.patch", chg_range.start_changelist);
+	p4format_patch_diff(tmpdir_name.buf, "a", "b", patch_name.buf);
 	list_depot_files_pair_destroy(&depot_files);
 	depot_change_range_destroy(&chg_range);
 	strbuf_release(&tmpdir_name);
+	strbuf_release(&patch_name);
 
 }
 
