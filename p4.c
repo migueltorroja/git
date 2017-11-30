@@ -2194,14 +2194,37 @@ static void depot_change_range_destroy(struct depot_change_range_t *ptr)
 
 static int p4format_patch_parse(int argc, const char **argv, struct depot_change_range_t *chrng)
 {
-	if (argc < 2) {
+	const char **argindx = argv;
+	char *endptr = NULL;
+	if (argc < 1) {
 		die ("Failed to parse string, no string passed");
 		return -1;
 	}
-	strbuf_addstr(&chrng->depot_path, argv[0]);
-	chrng->start_changelist = atoi(argv[1]);
-	if (argc > 2)
-		chrng->end_changelist = atoi(argv[2]);
+	strtol(*argindx, &endptr, 10);
+	if (endptr == *argindx) {
+		strbuf_addstr(&chrng->depot_path, *argindx);
+		argindx ++;
+		argc --;
+	}
+	else {
+		struct strbuf upstream = STRBUF_INIT;
+		struct hashmap p4settings;
+		const char *depot_path = NULL;
+		str_dict_init(&p4settings);
+		if (find_upstream_branch_point(0, &upstream, &p4settings) < 0)
+			die("Error findind upstream (%s:%d)", __FILE__,__LINE__ );
+		depot_path = str_dict_get_value(&p4settings, "depot-paths");
+		strbuf_addstr(&chrng->depot_path, depot_path);
+		str_dict_destroy(&p4settings);
+		strbuf_release(&upstream);
+	}
+	if (!argc)
+		die ("Failed to parse string, changelist expected");
+	chrng->start_changelist = atoi(*argindx);
+	argindx++;
+	argc --;
+	if (argc)
+		chrng->end_changelist = atoi(*argindx);
 	else
 		chrng->end_changelist = chrng->start_changelist;
 	return 0;
