@@ -1682,6 +1682,8 @@ int p4submit_apply(const char *commit_id)
 	argv_array_pushf(&gitargs, "%s^", commit_id);
 	argv_array_push(&gitargs, commit_id);
 	fprintf(stdout,"Applying");
+	safe_create_leading_directories_const(cli_path);
+	mkdir(cli_path, 0755);
 	git_print_short_log(stdout, commit_id);
 	git_cmd_read_pipe_line(gitargs.argv, p4submit_apply_cb, &files_to_update);
 	argv_array_clear(&gitargs);
