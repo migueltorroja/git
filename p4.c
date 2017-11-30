@@ -2194,6 +2194,20 @@ static void print_change_range(FILE *fp, struct depot_change_range_t *chrng)
 	fprintf(fp, "\tfrom: % 9d to: % 9d\n", chrng->start_changelist, chrng->end_changelist);
 }
 
+
+static int p4revtoi(const char *p4rev)
+{
+	long int n = 0;
+	char *endptr;
+	n = strtol(p4rev,  &endptr, 10);
+	if (endptr != p4rev)
+		return n;
+	if (!strcmp(p4rev, "none"))
+		return 0;
+	die ("Not a valid revision: %s", p4rev);
+	return n;
+}
+
 static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
 {
 	struct list_head *dpotlist = (struct list_head *) arg;
@@ -2213,21 +2227,23 @@ static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
 			const char *action = str_dict_get_valuef(map, "action%s", dp_suffix);
 			depot_file_init(&a);
 			depot_file_init(&b);
-			rev = atoi(str_dict_get_valuef(map, "rev%s", dp_suffix));
+			rev = p4revtoi(str_dict_get_valuef(map, "rev%s", dp_suffix));
 			if (is_shelved) {
 				depot_file_set(&b, kw->val.buf, changelist, 0);
 			}
 			else {
 				depot_file_set(&b, kw->val.buf, rev, 1);
-				rev --; //Previous revision
 			}
 			if (!strcmp(action,"edit")) {
+				rev --; //Previous revision
 				depot_file_set(&a, kw->val.buf, rev, 1);
 			}
 			else if (!strcmp(action, "delete")) {
 				SWAP(a,b);
 			}
-			else if (strcmp(action, "add") && strcmp(action, "branch")) {
+			else if (strcmp(action, "add") &&
+					strcmp(action, "branch") &&
+					strcmp(action, "integrate")) {
 				die("Action %s not supported", action);
 			}
 			list_depot_files_pair_add(dpotlist, &a, &b);
@@ -2327,6 +2343,64 @@ void p4shelve_cmd_init(struct command_t *pcmd)
 }
 
 
+static int git_rm(const char *filename)
+{
+	struct child_process child_git = CHILD_PROCESS_INIT;
+	child_git.git_cmd = 1;
+	argv_array_push(&child_git.args, "rm");
+	argv_array_push(&child_git.args, filename);
+	if (start_command(&child_git))
+		die("cannot run git rm %s", filename);
+	return finish_command(&child_git);
+}
+
+static int git_add(const char *filename)
+{
+	struct child_process child_git = CHILD_PROCESS_INIT;
+	child_git.git_cmd = 1;
+	argv_array_push(&child_git.args, "add");
+	argv_array_push(&child_git.args, filename);
+	if (start_command(&child_git))
+		die("cannot run git rm %s", filename);
+	return finish_command(&child_git);
+}
+
+static void list_depot_files_pair_to_worktree(const char *depot_prefix, const char *dest_dir, struct list_head *list_depot_files_pair)
+{
+	struct list_head *pos;
+	list_for_each(pos, list_depot_files_pair) {
+		struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT, NULL};
+		struct depot_file_pair_t *dp;
+		strbuf_addstr(&d_state.prefix_depot, depot_prefix);
+		strbuf_addstr(&d_state.dirname, dest_dir);
+		dp = list_entry(pos, struct depot_file_pair_t, lhead);
+		if (dp->b.depot_path_file.len) {
+			const char *filen = NULL;
+			if (starts_with(dp->b.depot_path_file.buf, d_state.prefix_depot.buf)) {
+				filen = dp->b.depot_path_file.buf + d_state.prefix_depot.len;
+				if (*filen == '/')
+					filen++;
+				d_state.fp = fopen(filen, "w");
+				p4_dump(&d_state, &dp->b);
+				fclose(d_state.fp);
+				d_state.fp = NULL;
+				git_add(filen);
+			}
+		}
+		else if (dp->a.depot_path_file.len) {
+			const char *filen = NULL;
+			if (starts_with(dp->b.depot_path_file.buf, d_state.prefix_depot.buf)) {
+				filen = dp->b.depot_path_file.buf + d_state.prefix_depot.len;
+				if (*filen == '/')
+					filen++;
+				git_rm(filen);
+			}
+		}
+		strbuf_release(&d_state.dirname);
+		strbuf_release(&d_state.prefix_depot);
+	}
+}
+
 
 void p4format_patch_cmd_init(struct command_t *pcmd)
 {
@@ -2334,6 +2408,36 @@ void p4format_patch_cmd_init(struct command_t *pcmd)
 	pcmd->needs_git = 0;
 	pcmd->verbose = 0;
 	pcmd->run_fn = p4format_patch_cmd_run;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->data = NULL;
+}
+
+void p4unshelve_cmd_run(struct command_t *cmd, int argc, const char **argv)
+{
+	struct option options[] = {
+		OPT_END()
+	};
+	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
+	struct list_head depot_files = LIST_HEAD_INIT(depot_files);
+	const char *worktree_dir = get_git_work_tree();
+	if (!worktree_dir)
+		die("Not in working tree\n");
+	argc = parse_options(argc, argv, NULL, options, NULL, 0);
+	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
+		die("Error parsing changelists");
+	}
+	add_list_files_from_changelist(&depot_files, &chg_range);
+	list_depot_files_pair_to_worktree(chg_range.depot_path.buf, worktree_dir, &depot_files);
+	list_depot_files_pair_destroy(&depot_files);
+	depot_change_range_destroy(&chg_range);
+}
+
+void p4unshelve_cmd_init(struct command_t *pcmd)
+{
+	strbuf_init(&pcmd->strb_usage,0);
+	pcmd->needs_git = 0;
+	pcmd->verbose = 0;
+	pcmd->run_fn = p4unshelve_cmd_run;
 	pcmd->deinit_fn = p4_cmd_default_deinit;
 	pcmd->data = NULL;
 }
@@ -2532,6 +2636,7 @@ const command_list_t cmd_lst[] =
 	{"submit", p4submit_cmd_init},
 	{"shelve", p4shelve_cmd_init},
 	{"format-patch", p4format_patch_cmd_init},
+	{"unshelve", p4unshelve_cmd_init},
 };
 
 void print_usage(FILE *fp, const char *progname)
@@ -2586,6 +2691,7 @@ int cmd_main(int argc, const char **argv)
 		print_usage(stderr,prog_name);
 		exit(2);
 	}
+	LOG_GITP4_DEBUG("git working directory: %s\n", get_git_work_tree());
 	p4cmd_name = argv[0];
 	if (cmd_init_by_name(p4cmd_name,&cmd) == NULL)
 	{
