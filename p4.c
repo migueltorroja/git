@@ -980,11 +980,13 @@ static int p4_where(const char *depot_path, struct strbuf *client_path)
 	return ret;
 }
 
-static int p4_sync(const char *client_path, struct string_list *local_files)
+static int p4_sync(const char *client_path, struct string_list *local_files, int force_sync)
 {
 	struct argv_array sync_args = ARGV_ARRAY_INIT;
-	argv_array_push(&sync_args, "sync");
 	int retp4 = -1;
+	argv_array_push(&sync_args, "sync");
+	if (force_sync)
+		argv_array_push(&sync_args, "-f");
 	if (!local_files) {
 		argv_array_push(&sync_args, "...");
 	}
@@ -999,19 +1001,34 @@ static int p4_sync(const char *client_path, struct string_list *local_files)
 	return retp4;
 }
 
-static int p4_sync_dir(const char *client_path)
+static int p4_sync_force_dir(const char *client_path)
 {
-	return p4_sync(client_path, NULL);
+	return p4_sync(client_path, NULL, 1);
 }
 
-static int p4_sync_file(const char *client_path, const char *filename)
+static int p4_sync_dir(const char *client_path)
+{
+	return p4_sync(client_path, NULL, 0);
+}
+
+static int p4_sync_file_opt(const char *client_path, const char *filename, int force_sync)
 {
 	struct string_list syncfiles = STRING_LIST_INIT_DUP;
 	int retp4sync = 0;
 	string_list_insert(&syncfiles, filename);
-	retp4sync = p4_sync(client_path, &syncfiles);
+	retp4sync = p4_sync(client_path, &syncfiles, force_sync);
 	string_list_clear(&syncfiles, 0);
 	return retp4sync;
+}
+
+static int p4_sync_file(const char *client_path, const char *filename)
+{
+	return p4_sync_file_opt(client_path, filename, 0);
+}
+
+static int p4_sync_force_file(const char *client_path, const char *filename)
+{
+	return p4_sync_file_opt(client_path, filename, 1);
 }
 
 static int dir_exists(const char *path)
@@ -1578,7 +1595,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	}
 	switch (modifier) {
 	case 'M':
-		p4_sync_file(cli_path, src_path.buf);
+		p4_sync_force_file(cli_path, src_path.buf);
 		p4_edit(cli_path, src_path.buf,0);
 		if (is_git_mode_exec_changed(src_mode, dst_mode))
 			str_dict_set_key_val(&files_to_update->exec_bit_changed, src_path.buf, dst_mode);
@@ -1674,7 +1691,7 @@ int p4submit_apply(const char *commit_id)
 		goto leave;
 	}
 	for_each_string_list_item(item,&files_to_update.type_changed) {
-		p4_sync_file(cli_path, item->string);
+		p4_sync_force_file(cli_path, item->string);
 		p4_edit(cli_path, item->string, 1);
 	}
 	for_each_string_list_item(item,&files_to_update.added) {
@@ -1682,7 +1699,7 @@ int p4submit_apply(const char *commit_id)
 	}
 	for_each_string_list_item(item,&files_to_update.deleted) {
 		p4_revert(cli_path, item->string);
-		p4_sync_file(cli_path, item->string);
+		p4_sync_force_file(cli_path, item->string);
 		p4_delete(cli_path, item->string);
 	}
 	hashmap_iter_init(&files_to_update.exec_bit_changed, &hm_iter);
