@@ -546,6 +546,7 @@ static void p4debug_cmd_run(command_t *pcmd, int gargc, const char **gargv)
 	while (py_marshal_parse(&map, child_p4.out))
 			str_dict_print(stdout, &map);
 
+	close(child_p4.out);
 	str_dict_destroy(&map);
 	finish_command(&child_p4);
 }
@@ -2043,6 +2044,7 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 		if (fwrite(kw->val.buf, kw->val.len, 1, dstate->fp) != 1)
 			die("Block not written");
 	}
+	close(child_p4.out);
 	res = finish_command(&child_p4);
 	str_dict_destroy(&map);
 	return res;
