@@ -30,7 +30,7 @@ typedef struct keyval_t{
 
 keyval_t *keyval_init(keyval_t *kw);
 void keyval_copy(keyval_t *dst, keyval_t *src);
-struct hashmap *py_marshal_parse(int fd);
+struct hashmap *py_marshal_parse(struct hashmap *map, int fd);
 static void str_dict_destroy(struct hashmap *map);
 void keyval_print(FILE *fp, keyval_t *kw);
 void keyval_release(keyval_t *kw);
@@ -267,6 +267,29 @@ static void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 	}
 }
 
+static void p4_start_command(struct child_process *cmd)
+{
+	const char **argv = cmd->argv?cmd->argv:cmd->args.argv;
+	const char * const*env = cmd->env?cmd->env:cmd->env_array.argv;
+	struct argv_array nargs = ARGV_ARRAY_INIT;
+	struct argv_array nenv = ARGV_ARRAY_INIT;
+	argv_array_push(&nargs, "p4");
+	argv_array_push(&nargs, "-G");
+	argv_array_pushv(&nargs, argv);
+	cmd->argv = nargs.argv;
+	SWAP(cmd->args, nargs);
+	SWAP(cmd->env_array, nenv);
+	if (cmd->dir) {
+		argv_array_pushv(&nenv, (const char **)env);
+		argv_array_pushf(&nenv, "PWD=%s",cmd->dir);
+		cmd->env = nenv.argv;
+	}
+	if (start_command(cmd))
+		die("cannot start p4 process");
+	argv_array_clear(&nargs);
+	argv_array_clear(&nenv);
+}
+
 /* function that runs the p4 with the python marshal output format
  * Each new py dict created is passed to a callback
  * it returns the exit status of the p4 command process 
@@ -275,25 +298,18 @@ static void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct hashmap *map, void *datain), void *data)
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
-	struct hashmap *map;
-	argv_array_push(&child_p4.args, "p4");
-	argv_array_push(&child_p4.args, "-G");
-	argv_array_pushv(&child_p4.args, argv);
+	struct hashmap map;
+	str_dict_init(&map);
+	child_p4.argv = argv;
 	child_p4.out = -1;
-	if (dir) {
-		child_p4.dir = dir;
-		argv_array_pushf(&child_p4.env_array, "PWD=%s",dir);
-	}
-	if (start_command(&child_p4))
-		die("cannot start p4 process");
-	while (NULL != (map = py_marshal_parse(child_p4.out)))
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out))
 	{
 		if (cb)
-			cb(map,data);
-		str_dict_destroy(map);
-		free(map);
+			cb(&map,data);
 	}
 	close(child_p4.out);
+	str_dict_destroy(&map);
 	return finish_command(&child_p4);
 }
 
@@ -2595,7 +2611,7 @@ static int read_int32_t(int fd, int32_t *v)
 	return 0;
 }
 
-struct hashmap *py_marshal_parse(int fd)
+struct hashmap *py_marshal_parse(struct hashmap *map, int fd)
 {
 #define PY_MARSHAL_WAIT_FOR_KEY     (0)
 #define PY_MARSHAL_WAIT_FOR_VAL     (1)
@@ -2604,7 +2620,7 @@ struct hashmap *py_marshal_parse(int fd)
 	ssize_t nr;
 	int state = PY_MARSHAL_WAIT_FOR_KEY;
 	keyval_t *kw = NULL;
-	struct hashmap *map = NULL;
+	struct hashmap *mapres = NULL;
 
 	for (;;)
 	{
@@ -2613,7 +2629,7 @@ struct hashmap *py_marshal_parse(int fd)
 			die("Error reading from fd: %d", fd);
 		if (nr == 0) {
 				assert(NULL == kw);
-				assert(NULL == map);
+				assert(NULL == mapres);
 				goto _leave;
 		}
 		switch(c)
@@ -2629,7 +2645,7 @@ struct hashmap *py_marshal_parse(int fd)
 				else
 				{
 					keyval_append_val_f(kw,fd, len);
-					str_dict_put_kw(map, kw);
+					str_dict_put_kw(mapres, kw);
 					kw = NULL;
 					state = PY_MARSHAL_WAIT_FOR_KEY;
 				}
@@ -2642,20 +2658,20 @@ struct hashmap *py_marshal_parse(int fd)
 				assert(state == PY_MARSHAL_WAIT_FOR_VAL);
 				read_int32_t(fd,&vi32);
 				strbuf_addf(&kw->val,"%d",vi32);
-				str_dict_put_kw(map, kw);
+				str_dict_put_kw(mapres, kw);
 				kw = NULL;
 				state = PY_MARSHAL_WAIT_FOR_KEY;
 				break;
 			case PY_MARSHAL_TYPE_NULL:
 				assert(NULL == kw);
-				assert(NULL != map);
-				return map;
+				assert(NULL != mapres);
+				return mapres;
 				break;
 			case PY_MARSHAL_TYPE_DICT:
 				// Do Nothing
-				assert(NULL == map); 
-				map = malloc(sizeof(struct hashmap));
-				str_dict_init(map);
+				assert(NULL == mapres); 
+				mapres = map;
+				str_dict_reset(mapres);
 				break;
 			default:
 				LOG_GITP4_CRITICAL("Not supported: %d\n",c);
@@ -2665,10 +2681,6 @@ struct hashmap *py_marshal_parse(int fd)
 	}
 	assert(NULL == kw);
 _leave:
-	if (NULL != map) {
-		str_dict_destroy(map);
-		free(map);
-	}
 	return NULL;
 }
 
