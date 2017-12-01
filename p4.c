@@ -2275,9 +2275,10 @@ static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
 			}
 			else {
 				depot_file_set(&b, kw->val.buf, rev, 1);
+				if (rev)
+					rev --; //Previous revision
 			}
 			if (!strcmp(action,"edit")) {
-				rev --; //Previous revision
 				depot_file_set(&a, kw->val.buf, rev, 1);
 			}
 			else if (!strcmp(action, "delete")) {
