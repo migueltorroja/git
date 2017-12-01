@@ -1993,7 +1993,7 @@ static void p4_print_cb(struct hashmap *map, void *arg)
 				strbuf_insert(&filename, 0, "/", 1);
 			strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
 			safe_create_leading_directories_const(filename.buf);
-			dstate->fp = fopen(filename.buf, "w");
+			dstate->fp = fopen(filename.buf, "wb");
 			if (!dstate->fp)
 				die("Error creating file %s", filename.buf);
 			LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
@@ -2001,7 +2001,8 @@ static void p4_print_cb(struct hashmap *map, void *arg)
 		strbuf_release(&filename);
 		return;
 	}
-	else if (strcmp(str_dict_get_value(map, "code"), "text")) {
+	else if (strcmp(str_dict_get_value(map, "code"), "text") &&
+			strcmp(str_dict_get_value(map, "code"), "binary")) {
 		return;
 	}
 	if (!dstate->fp)
@@ -2275,9 +2276,10 @@ static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
 			}
 			else {
 				depot_file_set(&b, kw->val.buf, rev, 1);
+				if (rev)
+					rev --; //Previous revision
 			}
 			if (!strcmp(action,"edit")) {
-				rev --; //Previous revision
 				depot_file_set(&a, kw->val.buf, rev, 1);
 			}
 			else if (!strcmp(action, "delete")) {
@@ -2422,7 +2424,7 @@ static void list_depot_files_pair_to_worktree(const char *depot_prefix, const ch
 				filen = dp->b.depot_path_file.buf + d_state.prefix_depot.len;
 				if (*filen == '/')
 					filen++;
-				d_state.fp = fopen(filen, "w");
+				d_state.fp = fopen(filen, "wb");
 				p4_dump(&d_state, &dp->b);
 				fclose(d_state.fp);
 				d_state.fp = NULL;
