@@ -30,11 +30,11 @@ typedef struct keyval_t{
 
 keyval_t *keyval_init(keyval_t *kw);
 void keyval_copy(keyval_t *dst, keyval_t *src);
-struct hashmap *py_marshal_parse(FILE *fp);
+struct hashmap *py_marshal_parse(int fd);
 static void str_dict_destroy(struct hashmap *map);
 void keyval_print(FILE *fp, keyval_t *kw);
 void keyval_release(keyval_t *kw);
-void keyval_append_key_f(keyval_t *kw, FILE *fp, size_t n);
+void keyval_append_key_f(keyval_t *kw, int fd, size_t n);
 
 static void wildcard_encode(struct strbuf *sb);
 
@@ -276,7 +276,6 @@ static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct ha
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap *map;
-	FILE *fp;
 	argv_array_push(&child_p4.args, "p4");
 	argv_array_push(&child_p4.args, "-G");
 	argv_array_pushv(&child_p4.args, argv);
@@ -287,15 +286,14 @@ static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct ha
 	}
 	if (start_command(&child_p4))
 		die("cannot start p4 process");
-	fp = fdopen(child_p4.out,"r");
-	while (NULL != (map = py_marshal_parse(fp)))
+	while (NULL != (map = py_marshal_parse(child_p4.out)))
 	{
 		if (cb)
 			cb(map,data);
 		str_dict_destroy(map);
 		free(map);
 	}
-	fclose(fp);
+	close(child_p4.out);
 	return finish_command(&child_p4);
 }
 
@@ -2501,35 +2499,36 @@ keyval_t *keyval_init(keyval_t *kw)
 	return kw;
 }
 
-void keyval_append_key_f(keyval_t *kw, FILE *fp, size_t n)
+
+static ssize_t strbuf_read_in_full(struct strbuf *sb, int fd, size_t size)
 {
-	while (n)
-	{
-		ssize_t res;
-		res = strbuf_fread(&kw->key, n, fp);
-		if ((res < 0) && (errno != EAGAIN) ) {
-			die("Error appending key reading fp\n");
-		}
-		else if (res > 0) {
-			n -= res;
-		}
-	}
+	ssize_t res;
+	size_t oldalloc = sb->alloc;
+	strbuf_grow(sb, size);
+	res = read_in_full(fd, sb->buf + sb->len, size);
+	if (res > 0)
+		strbuf_setlen(sb, sb->len+res);
+	else if (oldalloc == 0)
+		strbuf_release(sb);
+	return res;
+
+}
+
+void keyval_append_key_f(keyval_t *kw, int fd, size_t n)
+{
+	if (!n)
+		return;
+	if (strbuf_read_in_full(&kw->key, fd, n) <= 0)
+		die("Error appending key reading fd:%d size:%d", fd, (unsigned int) n);
 }
 
 
-void keyval_append_val_f(keyval_t *kw, FILE *fp, size_t n)
+void keyval_append_val_f(keyval_t *kw, int fd, size_t n)
 {
-	while (n)
-	{
-		ssize_t res;
-		res = strbuf_fread(&kw->val, n, fp);
-		if ((res < 0) && (errno != EAGAIN) ) {
-			die("Error appending val reading fp\n");
-		}
-		else if (res > 0) {
-			n -= res;
-		}
-	}
+	if (!n)
+		return;
+	if (strbuf_read_in_full(&kw->val, fd, n) <= 0)
+		die("Error appending val reading fd:%d size:%d", fd, (unsigned int) n);
 }
 
 
@@ -2581,14 +2580,14 @@ void keyval_release(keyval_t *kw)
 		free(kw);
 }
 
-static int fread_int32_t(FILE *fp, int32_t *v)
+static int read_int32_t(int fd, int32_t *v)
 {
 	*v = 0;
 	uint8_t bytes[4];
-	if (0 == fread(bytes,sizeof(bytes), 1, fp))
-	{
+	ssize_t nr;
+	nr = read_in_full(fd, bytes, sizeof(bytes));
+	if (nr < sizeof(bytes)) 
 		die("Error reading long\n");
-	}
 	*v  = bytes[0];
 	*v |= bytes[1] << 8;
 	*v |= bytes[2] << 16;
@@ -2596,36 +2595,40 @@ static int fread_int32_t(FILE *fp, int32_t *v)
 	return 0;
 }
 
-struct hashmap *py_marshal_parse(FILE *fp)
+struct hashmap *py_marshal_parse(int fd)
 {
 #define PY_MARSHAL_WAIT_FOR_KEY     (0)
 #define PY_MARSHAL_WAIT_FOR_VAL     (1)
 	int32_t vi32,len;
-	int c; 
+	char c;
+	ssize_t nr;
 	int state = PY_MARSHAL_WAIT_FOR_KEY;
 	keyval_t *kw = NULL;
 	struct hashmap *map = NULL;
 
 	for (;;)
-	{ 
-		c = fgetc(fp);
-		switch(c)
-		{
-			case EOF:
+	{
+		nr = read_in_full(fd, &c, sizeof(c));
+		if (nr < 0)
+			die("Error reading from fd: %d", fd);
+		if (nr == 0) {
 				assert(NULL == kw);
 				assert(NULL == map);
 				goto _leave;
+		}
+		switch(c)
+		{
 			case PY_MARSHAL_TYPE_STRING:
-				fread_int32_t(fp,&len);
+				read_int32_t(fd,&len);
 				if (state == PY_MARSHAL_WAIT_FOR_KEY)
 				{
 					kw = keyval_init(NULL);
-					keyval_append_key_f(kw,fp, len);
+					keyval_append_key_f(kw,fd, len);
 					state = PY_MARSHAL_WAIT_FOR_VAL;
 				}
 				else
 				{
-					keyval_append_val_f(kw,fp, len);
+					keyval_append_val_f(kw,fd, len);
 					str_dict_put_kw(map, kw);
 					kw = NULL;
 					state = PY_MARSHAL_WAIT_FOR_KEY;
@@ -2637,7 +2640,7 @@ struct hashmap *py_marshal_parse(FILE *fp)
 				// very few integers reported by p4/python marshal interface and having strings
 				// is more generic
 				assert(state == PY_MARSHAL_WAIT_FOR_VAL);
-				fread_int32_t(fp,&vi32);
+				read_int32_t(fd,&vi32);
 				strbuf_addf(&kw->val,"%d",vi32);
 				str_dict_put_kw(map, kw);
 				kw = NULL;
@@ -2656,7 +2659,7 @@ struct hashmap *py_marshal_parse(FILE *fp)
 				break;
 			default:
 				LOG_GITP4_CRITICAL("Not supported: %d\n",c);
-				die("Not supported\n"); 
+				die("Not supported\n");
 				goto _leave;
 		}
 	}
