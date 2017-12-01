@@ -529,22 +529,25 @@ static int p4_has_admin_permissions(const char *depot_path)
 	return has_admin;
 }
 
-static void p4debug_print_cb(struct hashmap *map, void *data)
-{
-	FILE *fp = (FILE *) data;
-	str_dict_print(fp, map);
-}
-
 static void p4debug_cmd_run(command_t *pcmd, int gargc, const char **gargv)
 {
-	struct argv_array dargs = ARGV_ARRAY_INIT;
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
 	const char **args = gargv+1;
+	child_p4.out = -1;
+	str_dict_init(&map);
+
 	gargc --;
-	for (;gargc; gargc--,args++) {
-		argv_array_push(&dargs, *args);
-	}
-	p4_cmd_run(dargs.argv, NULL, p4debug_print_cb,stdout);
-	argv_array_clear(&dargs);
+	for (;gargc; gargc--,args++)
+		argv_array_push(&child_p4.args, *args);
+
+	p4_start_command(&child_p4);
+
+	while (py_marshal_parse(&map, child_p4.out))
+			str_dict_print(stdout, &map);
+
+	str_dict_destroy(&map);
+	finish_command(&child_p4);
 }
 
 void p4_cmd_default_deinit(struct command_t *pcmd)
@@ -1990,58 +1993,59 @@ struct dump_file_state
 	FILE *fp;
 };
 
-
-static void p4_print_cb(struct hashmap *map, void *arg)
-{
-	struct dump_file_state *dstate = (struct dump_file_state*) arg;
-	const keyval_t *kw = NULL;
-	if (IS_LOG_DEBUG_ALLOWED)
-		str_dict_print(p4_verbose_debug.fp, map);
-	if (!strcmp(str_dict_get_value(map, "code"), "stat")) {
-		struct strbuf filename = STRBUF_INIT;
-		const char *path_in_subdir = NULL;
-		strbuf_addstr(&filename, str_dict_get_value(map, "depotFile"));
-		if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
-			strbuf_remove(&filename, 0, dstate->prefix_depot.len);
-			if (!ends_with(dstate->dirname.buf, "/"))
-				strbuf_insert(&filename, 0, "/", 1);
-			strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
-			safe_create_leading_directories_const(filename.buf);
-			dstate->fp = fopen(filename.buf, "wb");
-			if (!dstate->fp)
-				die("Error creating file %s", filename.buf);
-			LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
-		}
-		strbuf_release(&filename);
-		return;
-	}
-	else if (strcmp(str_dict_get_value(map, "code"), "text") &&
-			strcmp(str_dict_get_value(map, "code"), "binary")) {
-		return;
-	}
-	if (!dstate->fp)
-		return;
-	kw = str_dict_get_kw(map, "data");
-	if (!kw) {
-		die("Unexpected print output format");
-	}
-	if (!kw->val.len)
-		return;
-	if (fwrite(kw->val.buf, kw->val.len, 1, dstate->fp) != 1)
-		die("Block not written");
-}
-
 static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4filedesc)
 {
-	struct argv_array p4args = ARGV_ARRAY_INIT;
-	argv_array_push(&p4args, "print");
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	int res;
+	str_dict_init(&map);
+	argv_array_push(&child_p4.args, "print");
+	child_p4.out = -1;
 	if (p4filedesc->is_revision)
-		argv_array_pushf(&p4args, "%s#%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+		argv_array_pushf(&child_p4.args, "%s#%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
 	else
-		argv_array_pushf(&p4args, "%s@=%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
-	p4_cmd_run(p4args.argv, NULL, p4_print_cb, dstate);
-	argv_array_clear(&p4args);
-	return 0;
+		argv_array_pushf(&child_p4.args, "%s@=%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out)) {
+		const keyval_t *kw = NULL;
+		if (IS_LOG_DEBUG_ALLOWED)
+			str_dict_print(p4_verbose_debug.fp, &map);
+		if (!strcmp(str_dict_get_value(&map, "code"), "stat")) {
+			struct strbuf filename = STRBUF_INIT;
+			const char *path_in_subdir = NULL;
+			strbuf_addstr(&filename, str_dict_get_value(&map, "depotFile"));
+			if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
+				strbuf_remove(&filename, 0, dstate->prefix_depot.len);
+				if (!ends_with(dstate->dirname.buf, "/"))
+					strbuf_insert(&filename, 0, "/", 1);
+				strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
+				safe_create_leading_directories_const(filename.buf);
+				dstate->fp = fopen(filename.buf, "wb");
+				if (!dstate->fp)
+					die("Error creating file %s", filename.buf);
+				LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
+			}
+			strbuf_release(&filename);
+			continue;
+		}
+		else if (strcmp(str_dict_get_value(&map, "code"), "text") &&
+				strcmp(str_dict_get_value(&map, "code"), "binary")) {
+			continue;
+		}
+		if (!dstate->fp)
+			continue;
+		kw = str_dict_get_kw(&map, "data");
+		if (!kw) {
+			die("Unexpected print output format");
+		}
+		if (!kw->val.len)
+			continue;
+		if (fwrite(kw->val.buf, kw->val.len, 1, dstate->fp) != 1)
+			die("Block not written");
+	}
+	res = finish_command(&child_p4);
+	str_dict_destroy(&map);
+	return res;
 }
 
 static void depot_file_init(struct depot_file_t *p)
