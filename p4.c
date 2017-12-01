@@ -2271,60 +2271,63 @@ static int p4revtoi(const char *p4rev)
 	return n;
 }
 
-static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
-{
-	struct list_head *dpotlist = (struct list_head *) arg;
-	struct hashmap_iter hm_iter;
-	const keyval_t *kw;
-	const char *depotfile_str = "depotFile";
-	const int depotfile_len = strlen(depotfile_str);
-	unsigned int changelist = atoi(str_dict_get_value(map, "change"));
-	int is_shelved = str_dict_get_value(map, "shelved")!=NULL;
-	hashmap_iter_init(map, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
-		if (starts_with(kw->key.buf, depotfile_str)) {
-			const char *dp_suffix = kw->key.buf + depotfile_len;
-			unsigned int rev = 0;
-			struct depot_file_t a;
-			struct depot_file_t b;
-			const char *action = str_dict_get_valuef(map, "action%s", dp_suffix);
-			depot_file_init(&a);
-			depot_file_init(&b);
-			rev = p4revtoi(str_dict_get_valuef(map, "rev%s", dp_suffix));
-			if (is_shelved) {
-				depot_file_set(&b, kw->val.buf, changelist, 0);
-			}
-			else {
-				depot_file_set(&b, kw->val.buf, rev, 1);
-				if (rev)
-					rev --; //Previous revision
-			}
-			if (!strcmp(action,"edit")) {
-				depot_file_set(&a, kw->val.buf, rev, 1);
-			}
-			else if (!strcmp(action, "delete")) {
-				SWAP(a,b);
-			}
-			else if (strcmp(action, "add") &&
-					strcmp(action, "branch") &&
-					strcmp(action, "integrate")) {
-				die("Action %s not supported", action);
-			}
-			list_depot_files_pair_add(dpotlist, &a, &b);
-			depot_file_destroy(&a);
-			depot_file_destroy(&b);
-		}
-	}
-}
-
 static void add_list_files_from_changelist(struct list_head *dpfiles, struct depot_change_range_t *chrng)
 {
-	struct argv_array p4args = ARGV_ARRAY_INIT;
-	argv_array_push(&p4args, "describe");
-	argv_array_push(&p4args, "-S");
-	argv_array_pushf(&p4args, "%d", chrng->start_changelist);
-	p4_cmd_run(p4args.argv, NULL, add_list_files_from_changelist_cb, dpfiles);
-	argv_array_clear(&p4args);
+	const char *depotfile_str = "depotFile";
+	const int depotfile_len = strlen(depotfile_str);
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	str_dict_init(&map);
+	argv_array_push(&child_p4.args, "describe");
+	argv_array_push(&child_p4.args, "-S");
+	argv_array_pushf(&child_p4.args, "%d", chrng->start_changelist);
+	child_p4.out = -1;
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out))
+	{
+		struct hashmap_iter hm_iter;
+		const keyval_t *kw;
+		unsigned int changelist = atoi(str_dict_get_value(&map, "change"));
+		int is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
+		hashmap_iter_init(&map, &hm_iter);
+		while ((kw = hashmap_iter_next(&hm_iter))) {
+			if (starts_with(kw->key.buf, depotfile_str)) {
+				const char *dp_suffix = kw->key.buf + depotfile_len;
+				unsigned int rev = 0;
+				struct depot_file_t a;
+				struct depot_file_t b;
+				const char *action = str_dict_get_valuef(&map, "action%s", dp_suffix);
+				depot_file_init(&a);
+				depot_file_init(&b);
+				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
+				if (is_shelved) {
+					depot_file_set(&b, kw->val.buf, changelist, 0);
+				}
+				else {
+					depot_file_set(&b, kw->val.buf, rev, 1);
+					if (rev)
+						rev --; //Previous revision
+				}
+				if (!strcmp(action,"edit")) {
+					depot_file_set(&a, kw->val.buf, rev, 1);
+				}
+				else if (!strcmp(action, "delete")) {
+					SWAP(a,b);
+				}
+				else if (strcmp(action, "add") &&
+						strcmp(action, "branch") &&
+						strcmp(action, "integrate")) {
+					die("Action %s not supported", action);
+				}
+				list_depot_files_pair_add(dpfiles, &a, &b);
+				depot_file_destroy(&a);
+				depot_file_destroy(&b);
+			}
+		}
+	}
+	close(child_p4.out);
+	str_dict_destroy(&map);
+	finish_command(&child_p4);
 }
 
 static int p4format_patch_diff(const char *dir, const char *left, const char *right, const char *patch_name)
