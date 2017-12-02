@@ -2583,7 +2583,7 @@ void keyval_print(FILE *fp, keyval_t *kw)
 	size_t i;
 	if (NULL == fp)
 		fp = stdout;
-	fprintf(fp,"'%.*s': ", (int)kw->key.len, kw->key.buf);
+	fprintf(fp,"'%.*s' (len:%d): ", (int)kw->key.len, kw->key.buf, kw->val.len);
 	fprintf(fp,"'");
 	for (i=0;i<kw->val.len;i++) {
 		char c = kw->val.buf[i];
