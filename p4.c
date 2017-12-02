@@ -2283,8 +2283,14 @@ static void add_list_files_from_changelist(struct list_head *dpfiles, struct dep
 	{
 		struct hashmap_iter hm_iter;
 		const keyval_t *kw;
-		unsigned int changelist = atoi(str_dict_get_value(&map, "change"));
-		int is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
+		unsigned int changelist;
+		int is_shelved;
+		const char *code_str = str_dict_get_value(&map, "code");
+		assert(code_str);
+		if (!strcmp(code_str,"info"))
+			continue;
+		changelist = atoi(str_dict_get_value(&map, "change"));
+		is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
 		hashmap_iter_init(&map, &hm_iter);
 		while ((kw = hashmap_iter_next(&hm_iter))) {
 			if (starts_with(kw->key.buf, depotfile_str)) {
