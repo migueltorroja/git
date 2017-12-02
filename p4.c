@@ -1991,7 +1991,6 @@ struct dump_file_state
 {
 	struct strbuf prefix_depot;
 	struct strbuf dirname;
-	FILE *fp;
 };
 
 static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4filedesc)
@@ -1999,6 +1998,7 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
 	int res;
+	int fd = -1;
 	str_dict_init(&map);
 	argv_array_push(&child_p4.args, "print");
 	child_p4.out = -1;
@@ -2014,6 +2014,9 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 		if (!strcmp(str_dict_get_value(&map, "code"), "stat")) {
 			struct strbuf filename = STRBUF_INIT;
 			const char *path_in_subdir = NULL;
+			if (fd >= 0)
+				close(fd);
+			fd = -1;
 			strbuf_addstr(&filename, str_dict_get_value(&map, "depotFile"));
 			if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
 				strbuf_remove(&filename, 0, dstate->prefix_depot.len);
@@ -2021,8 +2024,8 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 					strbuf_insert(&filename, 0, "/", 1);
 				strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
 				safe_create_leading_directories_const(filename.buf);
-				dstate->fp = fopen(filename.buf, "wb");
-				if (!dstate->fp)
+				fd = open(filename.buf, O_CREAT | O_WRONLY, 0666);
+				if (fd < 0)
 					die("Error creating file %s", filename.buf);
 				LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
 			}
@@ -2033,7 +2036,7 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 				strcmp(str_dict_get_value(&map, "code"), "binary")) {
 			continue;
 		}
-		if (!dstate->fp)
+		if (fd < 0)
 			continue;
 		kw = str_dict_get_kw(&map, "data");
 		if (!kw) {
@@ -2041,9 +2044,10 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 		}
 		if (!kw->val.len)
 			continue;
-		if (fwrite(kw->val.buf, kw->val.len, 1, dstate->fp) != 1)
-			die("Block not written");
+		if (write_in_full(fd, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
 	}
+	if (fd >= 0)
+		close(fd);
 	close(child_p4.out);
 	res = finish_command(&child_p4);
 	str_dict_destroy(&map);
@@ -2143,21 +2147,13 @@ static void depot_file_pair_init(struct depot_file_pair_t *dp)
 
 static void depot_file_pair_dump(const char *depot_prefix, const char *dst_dir, struct depot_file_pair_t *dp)
 {
-	struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT, NULL};
+	struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT};
 	strbuf_addstr(&d_state.prefix_depot, depot_prefix);
 	strbuf_addf(&d_state.dirname, "%s/a", dst_dir);
 	p4_dump(&d_state, &dp->a);
-	if (d_state.fp) {
-		fclose(d_state.fp);
-		d_state.fp = NULL;
-	}
 	strbuf_reset(&d_state.dirname);
 	strbuf_addf(&d_state.dirname, "%s/b", dst_dir);
 	p4_dump(&d_state, &dp->b);
-	if (d_state.fp) {
-		fclose(d_state.fp);
-		d_state.fp = NULL;
-	}
 	strbuf_release(&d_state.dirname);
 	strbuf_release(&d_state.prefix_depot);
 }
@@ -2436,7 +2432,7 @@ static void list_depot_files_pair_to_worktree(const char *depot_prefix, const ch
 {
 	struct list_head *pos;
 	list_for_each(pos, list_depot_files_pair) {
-		struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT, NULL};
+		struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT};
 		struct depot_file_pair_t *dp;
 		strbuf_addstr(&d_state.prefix_depot, depot_prefix);
 		strbuf_addstr(&d_state.dirname, dest_dir);
@@ -2447,10 +2443,7 @@ static void list_depot_files_pair_to_worktree(const char *depot_prefix, const ch
 				filen = dp->b.depot_path_file.buf + d_state.prefix_depot.len;
 				if (*filen == '/')
 					filen++;
-				d_state.fp = fopen(filen, "wb");
 				p4_dump(&d_state, &dp->b);
-				fclose(d_state.fp);
-				d_state.fp = NULL;
 				git_add(filen);
 			}
 		}
