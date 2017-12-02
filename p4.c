@@ -12,6 +12,7 @@
 #include "gettext.h"
 #include "config.h"
 #include "run-command.h"
+#include "utf8.h"
 
 
 
@@ -1999,6 +2000,7 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 	struct hashmap map;
 	int res;
 	int fd = -1;
+	iconv_t icd = NULL;
 	str_dict_init(&map);
 	argv_array_push(&child_p4.args, "print");
 	child_p4.out = -1;
@@ -2017,6 +2019,9 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 			if (fd >= 0)
 				close(fd);
 			fd = -1;
+			if (icd)
+				iconv_close(icd);
+			icd = NULL;
 			strbuf_addstr(&filename, str_dict_get_value(&map, "depotFile"));
 			if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
 				strbuf_remove(&filename, 0, dstate->prefix_depot.len);
@@ -2027,6 +2032,9 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 				fd = open(filename.buf, O_CREAT | O_WRONLY, 0666);
 				if (fd < 0)
 					die("Error creating file %s", filename.buf);
+				if (!strcmp(str_dict_get_value(&map, "type"), "utf16")) {
+					icd = iconv_open("utf16", "utf8");
+				}
 				LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
 			}
 			strbuf_release(&filename);
@@ -2044,10 +2052,24 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 		}
 		if (!kw->val.len)
 			continue;
+		if (icd) {
+			int outsz;
+			char *buf_utf16;
+			keyval_t *kw_reencoded = keyval_init(NULL);
+			buf_utf16 = reencode_string_iconv(kw->val.buf, kw->val.len, icd, &outsz);
+			assert(buf_utf16);
+			strbuf_addbuf(&kw_reencoded->key, &kw->key);
+			strbuf_add(&kw_reencoded->val, buf_utf16, outsz);
+			free(buf_utf16);
+			str_dict_put_kw(&map, kw_reencoded);
+			kw = str_dict_get_kw(&map, "data");
+		}
 		if (write_in_full(fd, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
 	}
 	if (fd >= 0)
 		close(fd);
+	if (icd)
+		iconv_close(icd);
 	close(child_p4.out);
 	res = finish_command(&child_p4);
 	str_dict_destroy(&map);
