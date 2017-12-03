@@ -316,6 +316,7 @@ static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct ha
 	str_dict_init(&map);
 	child_p4.argv = argv;
 	child_p4.out = -1;
+	child_p4.dir = dir;
 	p4_start_command(&child_p4);
 	while (py_marshal_parse(&map, child_p4.out))
 	{
