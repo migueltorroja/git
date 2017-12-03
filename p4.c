@@ -2320,9 +2320,10 @@ static void add_list_files_from_changelist(struct list_head *dpfiles, struct dep
 		const keyval_t *kw;
 		unsigned int changelist;
 		int is_shelved;
-		const char *code_str = str_dict_get_value(&map, "code");
-		assert(code_str);
-		if (!strcmp(code_str,"info"))
+		assert(str_dict_strcmp(&map, "code", NULL));
+		if (!str_dict_strcmp(&map, "code", "error"))
+			die("Error geting description for change %d", chrng->start_changelist);
+		if (!str_dict_strcmp(&map, "code", "info"))
 			continue;
 		changelist = atoi(str_dict_get_value(&map, "change"));
 		is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
