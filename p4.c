@@ -268,6 +268,19 @@ static void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 	}
 }
 
+static int str_dict_strcmp(struct hashmap *map, const char *key, const char *valcmp)
+{
+	const char *val_str = str_dict_get_value(map, key);
+	if (!val_str) {
+		if (!valcmp)
+			return 0;
+		return 1;
+	}
+	else if (!valcmp)
+		return 1;
+	return strcmp(val_str, valcmp);
+}
+
 static void p4_start_command(struct child_process *cmd)
 {
 	const char **argv = cmd->argv?cmd->argv:cmd->args.argv;
@@ -2695,6 +2708,10 @@ struct hashmap *py_marshal_parse(struct hashmap *map, int fd)
 			case PY_MARSHAL_TYPE_NULL:
 				assert(NULL == kw);
 				assert(NULL != mapres);
+				if (!str_dict_strcmp(mapres, "code", "error")) {
+					const char *data_str = str_dict_get_value(mapres, "data");
+					fprintf(stderr, "%s", data_str);
+				}
 				return mapres;
 				break;
 			case PY_MARSHAL_TYPE_DICT:
