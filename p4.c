@@ -12,6 +12,7 @@
 #include "gettext.h"
 #include "config.h"
 #include "run-command.h"
+#include "utf8.h"
 
 
 
@@ -30,11 +31,11 @@ typedef struct keyval_t{
 
 keyval_t *keyval_init(keyval_t *kw);
 void keyval_copy(keyval_t *dst, keyval_t *src);
-struct hashmap *py_marshal_parse(FILE *fp);
+struct hashmap *py_marshal_parse(struct hashmap *map, int fd);
 static void str_dict_destroy(struct hashmap *map);
 void keyval_print(FILE *fp, keyval_t *kw);
 void keyval_release(keyval_t *kw);
-void keyval_append_key_f(keyval_t *kw, FILE *fp, size_t n);
+void keyval_append_key_f(keyval_t *kw, int fd, size_t n);
 
 static void wildcard_encode(struct strbuf *sb);
 
@@ -267,6 +268,42 @@ static void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 	}
 }
 
+static int str_dict_strcmp(struct hashmap *map, const char *key, const char *valcmp)
+{
+	const char *val_str = str_dict_get_value(map, key);
+	if (!val_str) {
+		if (!valcmp)
+			return 0;
+		return 1;
+	}
+	else if (!valcmp)
+		return 1;
+	return strcmp(val_str, valcmp);
+}
+
+static void p4_start_command(struct child_process *cmd)
+{
+	const char **argv = cmd->argv?cmd->argv:cmd->args.argv;
+	const char * const*env = cmd->env?cmd->env:cmd->env_array.argv;
+	struct argv_array nargs = ARGV_ARRAY_INIT;
+	struct argv_array nenv = ARGV_ARRAY_INIT;
+	argv_array_push(&nargs, "p4");
+	argv_array_push(&nargs, "-G");
+	argv_array_pushv(&nargs, argv);
+	cmd->argv = nargs.argv;
+	SWAP(cmd->args, nargs);
+	SWAP(cmd->env_array, nenv);
+	if (cmd->dir) {
+		argv_array_pushv(&nenv, (const char **)env);
+		argv_array_pushf(&nenv, "PWD=%s",cmd->dir);
+		cmd->env = nenv.argv;
+	}
+	if (start_command(cmd))
+		die("cannot start p4 process");
+	argv_array_clear(&nargs);
+	argv_array_clear(&nenv);
+}
+
 /* function that runs the p4 with the python marshal output format
  * Each new py dict created is passed to a callback
  * it returns the exit status of the p4 command process 
@@ -275,27 +312,19 @@ static void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 static int p4_cmd_run(const char **argv, const char *dir, void (*cb) ( struct hashmap *map, void *datain), void *data)
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
-	struct hashmap *map;
-	FILE *fp;
-	argv_array_push(&child_p4.args, "p4");
-	argv_array_push(&child_p4.args, "-G");
-	argv_array_pushv(&child_p4.args, argv);
+	struct hashmap map;
+	str_dict_init(&map);
+	child_p4.argv = argv;
 	child_p4.out = -1;
-	if (dir) {
-		child_p4.dir = dir;
-		argv_array_pushf(&child_p4.env_array, "PWD=%s",dir);
-	}
-	if (start_command(&child_p4))
-		die("cannot start p4 process");
-	fp = fdopen(child_p4.out,"r");
-	while (NULL != (map = py_marshal_parse(fp)))
+	child_p4.dir = dir;
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out))
 	{
 		if (cb)
-			cb(map,data);
-		str_dict_destroy(map);
-		free(map);
+			cb(&map,data);
 	}
-	fclose(fp);
+	close(child_p4.out);
+	str_dict_destroy(&map);
 	return finish_command(&child_p4);
 }
 
@@ -515,22 +544,26 @@ static int p4_has_admin_permissions(const char *depot_path)
 	return has_admin;
 }
 
-static void p4debug_print_cb(struct hashmap *map, void *data)
-{
-	FILE *fp = (FILE *) data;
-	str_dict_print(fp, map);
-}
-
 static void p4debug_cmd_run(command_t *pcmd, int gargc, const char **gargv)
 {
-	struct argv_array dargs = ARGV_ARRAY_INIT;
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
 	const char **args = gargv+1;
+	child_p4.out = -1;
+	str_dict_init(&map);
+
 	gargc --;
-	for (;gargc; gargc--,args++) {
-		argv_array_push(&dargs, *args);
-	}
-	p4_cmd_run(dargs.argv, NULL, p4debug_print_cb,stdout);
-	argv_array_clear(&dargs);
+	for (;gargc; gargc--,args++)
+		argv_array_push(&child_p4.args, *args);
+
+	p4_start_command(&child_p4);
+
+	while (py_marshal_parse(&map, child_p4.out))
+			str_dict_print(stdout, &map);
+
+	close(child_p4.out);
+	str_dict_destroy(&map);
+	finish_command(&child_p4);
 }
 
 void p4_cmd_default_deinit(struct command_t *pcmd)
@@ -1973,61 +2006,88 @@ struct dump_file_state
 {
 	struct strbuf prefix_depot;
 	struct strbuf dirname;
-	FILE *fp;
 };
-
-
-static void p4_print_cb(struct hashmap *map, void *arg)
-{
-	struct dump_file_state *dstate = (struct dump_file_state*) arg;
-	const keyval_t *kw = NULL;
-	if (IS_LOG_DEBUG_ALLOWED)
-		str_dict_print(p4_verbose_debug.fp, map);
-	if (!strcmp(str_dict_get_value(map, "code"), "stat")) {
-		struct strbuf filename = STRBUF_INIT;
-		const char *path_in_subdir = NULL;
-		strbuf_addstr(&filename, str_dict_get_value(map, "depotFile"));
-		if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
-			strbuf_remove(&filename, 0, dstate->prefix_depot.len);
-			if (!ends_with(dstate->dirname.buf, "/"))
-				strbuf_insert(&filename, 0, "/", 1);
-			strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
-			safe_create_leading_directories_const(filename.buf);
-			dstate->fp = fopen(filename.buf, "wb");
-			if (!dstate->fp)
-				die("Error creating file %s", filename.buf);
-			LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
-		}
-		strbuf_release(&filename);
-		return;
-	}
-	else if (strcmp(str_dict_get_value(map, "code"), "text") &&
-			strcmp(str_dict_get_value(map, "code"), "binary")) {
-		return;
-	}
-	if (!dstate->fp)
-		return;
-	kw = str_dict_get_kw(map, "data");
-	if (!kw) {
-		die("Unexpected print output format");
-	}
-	if (!kw->val.len)
-		return;
-	if (fwrite(kw->val.buf, kw->val.len, 1, dstate->fp) != 1)
-		die("Block not written");
-}
 
 static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4filedesc)
 {
-	struct argv_array p4args = ARGV_ARRAY_INIT;
-	argv_array_push(&p4args, "print");
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	int res;
+	int fd = -1;
+	iconv_t icd = NULL;
+	str_dict_init(&map);
+	argv_array_push(&child_p4.args, "print");
+	child_p4.out = -1;
 	if (p4filedesc->is_revision)
-		argv_array_pushf(&p4args, "%s#%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+		argv_array_pushf(&child_p4.args, "%s#%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
 	else
-		argv_array_pushf(&p4args, "%s@=%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
-	p4_cmd_run(p4args.argv, NULL, p4_print_cb, dstate);
-	argv_array_clear(&p4args);
-	return 0;
+		argv_array_pushf(&child_p4.args, "%s@=%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out)) {
+		const keyval_t *kw = NULL;
+		if (IS_LOG_DEBUG_ALLOWED)
+			str_dict_print(p4_verbose_debug.fp, &map);
+		if (!strcmp(str_dict_get_value(&map, "code"), "stat")) {
+			struct strbuf filename = STRBUF_INIT;
+			const char *path_in_subdir = NULL;
+			if (fd >= 0)
+				close(fd);
+			fd = -1;
+			if (icd)
+				iconv_close(icd);
+			icd = NULL;
+			strbuf_addstr(&filename, str_dict_get_value(&map, "depotFile"));
+			if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
+				strbuf_remove(&filename, 0, dstate->prefix_depot.len);
+				if (!ends_with(dstate->dirname.buf, "/"))
+					strbuf_insert(&filename, 0, "/", 1);
+				strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
+				safe_create_leading_directories_const(filename.buf);
+				fd = open(filename.buf, O_CREAT | O_WRONLY, 0666);
+				if (fd < 0)
+					die("Error creating file %s", filename.buf);
+				if (!strcmp(str_dict_get_value(&map, "type"), "utf16")) {
+					icd = iconv_open("utf16", "utf8");
+				}
+				LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
+			}
+			strbuf_release(&filename);
+			continue;
+		}
+		else if (strcmp(str_dict_get_value(&map, "code"), "text") &&
+				strcmp(str_dict_get_value(&map, "code"), "binary")) {
+			continue;
+		}
+		if (fd < 0)
+			continue;
+		kw = str_dict_get_kw(&map, "data");
+		if (!kw) {
+			die("Unexpected print output format");
+		}
+		if (!kw->val.len)
+			continue;
+		if (icd) {
+			int outsz;
+			char *buf_utf16;
+			keyval_t *kw_reencoded = keyval_init(NULL);
+			buf_utf16 = reencode_string_iconv(kw->val.buf, kw->val.len, icd, &outsz);
+			assert(buf_utf16);
+			strbuf_addbuf(&kw_reencoded->key, &kw->key);
+			strbuf_add(&kw_reencoded->val, buf_utf16, outsz);
+			free(buf_utf16);
+			str_dict_put_kw(&map, kw_reencoded);
+			kw = str_dict_get_kw(&map, "data");
+		}
+		if (write_in_full(fd, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
+	}
+	if (fd >= 0)
+		close(fd);
+	if (icd)
+		iconv_close(icd);
+	close(child_p4.out);
+	res = finish_command(&child_p4);
+	str_dict_destroy(&map);
+	return res;
 }
 
 static void depot_file_init(struct depot_file_t *p)
@@ -2123,21 +2183,13 @@ static void depot_file_pair_init(struct depot_file_pair_t *dp)
 
 static void depot_file_pair_dump(const char *depot_prefix, const char *dst_dir, struct depot_file_pair_t *dp)
 {
-	struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT, NULL};
+	struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT};
 	strbuf_addstr(&d_state.prefix_depot, depot_prefix);
 	strbuf_addf(&d_state.dirname, "%s/a", dst_dir);
 	p4_dump(&d_state, &dp->a);
-	if (d_state.fp) {
-		fclose(d_state.fp);
-		d_state.fp = NULL;
-	}
 	strbuf_reset(&d_state.dirname);
 	strbuf_addf(&d_state.dirname, "%s/b", dst_dir);
 	p4_dump(&d_state, &dp->b);
-	if (d_state.fp) {
-		fclose(d_state.fp);
-		d_state.fp = NULL;
-	}
 	strbuf_release(&d_state.dirname);
 	strbuf_release(&d_state.prefix_depot);
 }
@@ -2251,60 +2303,70 @@ static int p4revtoi(const char *p4rev)
 	return n;
 }
 
-static void add_list_files_from_changelist_cb(struct hashmap *map, void *arg)
-{
-	struct list_head *dpotlist = (struct list_head *) arg;
-	struct hashmap_iter hm_iter;
-	const keyval_t *kw;
-	const char *depotfile_str = "depotFile";
-	const int depotfile_len = strlen(depotfile_str);
-	unsigned int changelist = atoi(str_dict_get_value(map, "change"));
-	int is_shelved = str_dict_get_value(map, "shelved")!=NULL;
-	hashmap_iter_init(map, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
-		if (starts_with(kw->key.buf, depotfile_str)) {
-			const char *dp_suffix = kw->key.buf + depotfile_len;
-			unsigned int rev = 0;
-			struct depot_file_t a;
-			struct depot_file_t b;
-			const char *action = str_dict_get_valuef(map, "action%s", dp_suffix);
-			depot_file_init(&a);
-			depot_file_init(&b);
-			rev = p4revtoi(str_dict_get_valuef(map, "rev%s", dp_suffix));
-			if (is_shelved) {
-				depot_file_set(&b, kw->val.buf, changelist, 0);
-			}
-			else {
-				depot_file_set(&b, kw->val.buf, rev, 1);
-				if (rev)
-					rev --; //Previous revision
-			}
-			if (!strcmp(action,"edit")) {
-				depot_file_set(&a, kw->val.buf, rev, 1);
-			}
-			else if (!strcmp(action, "delete")) {
-				SWAP(a,b);
-			}
-			else if (strcmp(action, "add") &&
-					strcmp(action, "branch") &&
-					strcmp(action, "integrate")) {
-				die("Action %s not supported", action);
-			}
-			list_depot_files_pair_add(dpotlist, &a, &b);
-			depot_file_destroy(&a);
-			depot_file_destroy(&b);
-		}
-	}
-}
-
 static void add_list_files_from_changelist(struct list_head *dpfiles, struct depot_change_range_t *chrng)
 {
-	struct argv_array p4args = ARGV_ARRAY_INIT;
-	argv_array_push(&p4args, "describe");
-	argv_array_push(&p4args, "-S");
-	argv_array_pushf(&p4args, "%d", chrng->start_changelist);
-	p4_cmd_run(p4args.argv, NULL, add_list_files_from_changelist_cb, dpfiles);
-	argv_array_clear(&p4args);
+	const char *depotfile_str = "depotFile";
+	const int depotfile_len = strlen(depotfile_str);
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	str_dict_init(&map);
+	argv_array_push(&child_p4.args, "describe");
+	argv_array_push(&child_p4.args, "-S");
+	argv_array_pushf(&child_p4.args, "%d", chrng->start_changelist);
+	child_p4.out = -1;
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out))
+	{
+		struct hashmap_iter hm_iter;
+		const keyval_t *kw;
+		unsigned int changelist;
+		int is_shelved;
+		assert(str_dict_strcmp(&map, "code", NULL));
+		if (!str_dict_strcmp(&map, "code", "error"))
+			die("Error geting description for change %d", chrng->start_changelist);
+		if (!str_dict_strcmp(&map, "code", "info"))
+			continue;
+		changelist = atoi(str_dict_get_value(&map, "change"));
+		is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
+		hashmap_iter_init(&map, &hm_iter);
+		while ((kw = hashmap_iter_next(&hm_iter))) {
+			if (starts_with(kw->key.buf, depotfile_str)) {
+				const char *dp_suffix = kw->key.buf + depotfile_len;
+				unsigned int rev = 0;
+				struct depot_file_t a;
+				struct depot_file_t b;
+				const char *action = str_dict_get_valuef(&map, "action%s", dp_suffix);
+				depot_file_init(&a);
+				depot_file_init(&b);
+				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
+				if (is_shelved) {
+					depot_file_set(&b, kw->val.buf, changelist, 0);
+				}
+				else {
+					depot_file_set(&b, kw->val.buf, rev, 1);
+					if (rev)
+						rev --; //Previous revision
+				}
+				if (!strcmp(action,"edit")) {
+					depot_file_set(&a, kw->val.buf, rev, 1);
+				}
+				else if (!strcmp(action, "delete")) {
+					SWAP(a,b);
+				}
+				else if (strcmp(action, "add") &&
+						strcmp(action, "branch") &&
+						strcmp(action, "integrate")) {
+					die("Action %s not supported", action);
+				}
+				list_depot_files_pair_add(dpfiles, &a, &b);
+				depot_file_destroy(&a);
+				depot_file_destroy(&b);
+			}
+		}
+	}
+	close(child_p4.out);
+	str_dict_destroy(&map);
+	finish_command(&child_p4);
 }
 
 static int p4format_patch_diff(const char *dir, const char *left, const char *right, const char *patch_name)
@@ -2413,7 +2475,7 @@ static void list_depot_files_pair_to_worktree(const char *depot_prefix, const ch
 {
 	struct list_head *pos;
 	list_for_each(pos, list_depot_files_pair) {
-		struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT, NULL};
+		struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT};
 		struct depot_file_pair_t *dp;
 		strbuf_addstr(&d_state.prefix_depot, depot_prefix);
 		strbuf_addstr(&d_state.dirname, dest_dir);
@@ -2424,10 +2486,7 @@ static void list_depot_files_pair_to_worktree(const char *depot_prefix, const ch
 				filen = dp->b.depot_path_file.buf + d_state.prefix_depot.len;
 				if (*filen == '/')
 					filen++;
-				d_state.fp = fopen(filen, "wb");
 				p4_dump(&d_state, &dp->b);
-				fclose(d_state.fp);
-				d_state.fp = NULL;
 				git_add(filen);
 			}
 		}
@@ -2501,35 +2560,36 @@ keyval_t *keyval_init(keyval_t *kw)
 	return kw;
 }
 
-void keyval_append_key_f(keyval_t *kw, FILE *fp, size_t n)
+
+static ssize_t strbuf_read_in_full(struct strbuf *sb, int fd, size_t size)
 {
-	while (n)
-	{
-		ssize_t res;
-		res = strbuf_fread(&kw->key, n, fp);
-		if ((res < 0) && (errno != EAGAIN) ) {
-			die("Error appending key reading fp\n");
-		}
-		else if (res > 0) {
-			n -= res;
-		}
-	}
+	ssize_t res;
+	size_t oldalloc = sb->alloc;
+	strbuf_grow(sb, size);
+	res = read_in_full(fd, sb->buf + sb->len, size);
+	if (res > 0)
+		strbuf_setlen(sb, sb->len+res);
+	else if (oldalloc == 0)
+		strbuf_release(sb);
+	return res;
+
+}
+
+void keyval_append_key_f(keyval_t *kw, int fd, size_t n)
+{
+	if (!n)
+		return;
+	if (strbuf_read_in_full(&kw->key, fd, n) <= 0)
+		die("Error appending key reading fd:%d size:%d", fd, (unsigned int) n);
 }
 
 
-void keyval_append_val_f(keyval_t *kw, FILE *fp, size_t n)
+void keyval_append_val_f(keyval_t *kw, int fd, size_t n)
 {
-	while (n)
-	{
-		ssize_t res;
-		res = strbuf_fread(&kw->val, n, fp);
-		if ((res < 0) && (errno != EAGAIN) ) {
-			die("Error appending val reading fp\n");
-		}
-		else if (res > 0) {
-			n -= res;
-		}
-	}
+	if (!n)
+		return;
+	if (strbuf_read_in_full(&kw->val, fd, n) <= 0)
+		die("Error appending val reading fd:%d size:%d", fd, (unsigned int) n);
 }
 
 
@@ -2538,7 +2598,7 @@ void keyval_print(FILE *fp, keyval_t *kw)
 	size_t i;
 	if (NULL == fp)
 		fp = stdout;
-	fprintf(fp,"'%.*s': ", (int)kw->key.len, kw->key.buf);
+	fprintf(fp,"'%.*s' (len:%d): ", (int)kw->key.len, kw->key.buf, kw->val.len);
 	fprintf(fp,"'");
 	for (i=0;i<kw->val.len;i++) {
 		char c = kw->val.buf[i];
@@ -2581,14 +2641,14 @@ void keyval_release(keyval_t *kw)
 		free(kw);
 }
 
-static int fread_int32_t(FILE *fp, int32_t *v)
+static int read_int32_t(int fd, int32_t *v)
 {
 	*v = 0;
 	uint8_t bytes[4];
-	if (0 == fread(bytes,sizeof(bytes), 1, fp))
-	{
+	ssize_t nr;
+	nr = read_in_full(fd, bytes, sizeof(bytes));
+	if (nr < sizeof(bytes)) 
 		die("Error reading long\n");
-	}
 	*v  = bytes[0];
 	*v |= bytes[1] << 8;
 	*v |= bytes[2] << 16;
@@ -2596,37 +2656,41 @@ static int fread_int32_t(FILE *fp, int32_t *v)
 	return 0;
 }
 
-struct hashmap *py_marshal_parse(FILE *fp)
+struct hashmap *py_marshal_parse(struct hashmap *map, int fd)
 {
 #define PY_MARSHAL_WAIT_FOR_KEY     (0)
 #define PY_MARSHAL_WAIT_FOR_VAL     (1)
 	int32_t vi32,len;
-	int c; 
+	char c;
+	ssize_t nr;
 	int state = PY_MARSHAL_WAIT_FOR_KEY;
 	keyval_t *kw = NULL;
-	struct hashmap *map = NULL;
+	struct hashmap *mapres = NULL;
 
 	for (;;)
-	{ 
-		c = fgetc(fp);
+	{
+		nr = read_in_full(fd, &c, sizeof(c));
+		if (nr < 0)
+			die("Error reading from fd: %d", fd);
+		if (nr == 0) {
+				assert(NULL == kw);
+				assert(NULL == mapres);
+				goto _leave;
+		}
 		switch(c)
 		{
-			case EOF:
-				assert(NULL == kw);
-				assert(NULL == map);
-				goto _leave;
 			case PY_MARSHAL_TYPE_STRING:
-				fread_int32_t(fp,&len);
+				read_int32_t(fd,&len);
 				if (state == PY_MARSHAL_WAIT_FOR_KEY)
 				{
 					kw = keyval_init(NULL);
-					keyval_append_key_f(kw,fp, len);
+					keyval_append_key_f(kw,fd, len);
 					state = PY_MARSHAL_WAIT_FOR_VAL;
 				}
 				else
 				{
-					keyval_append_val_f(kw,fp, len);
-					str_dict_put_kw(map, kw);
+					keyval_append_val_f(kw,fd, len);
+					str_dict_put_kw(mapres, kw);
 					kw = NULL;
 					state = PY_MARSHAL_WAIT_FOR_KEY;
 				}
@@ -2637,35 +2701,35 @@ struct hashmap *py_marshal_parse(FILE *fp)
 				// very few integers reported by p4/python marshal interface and having strings
 				// is more generic
 				assert(state == PY_MARSHAL_WAIT_FOR_VAL);
-				fread_int32_t(fp,&vi32);
+				read_int32_t(fd,&vi32);
 				strbuf_addf(&kw->val,"%d",vi32);
-				str_dict_put_kw(map, kw);
+				str_dict_put_kw(mapres, kw);
 				kw = NULL;
 				state = PY_MARSHAL_WAIT_FOR_KEY;
 				break;
 			case PY_MARSHAL_TYPE_NULL:
 				assert(NULL == kw);
-				assert(NULL != map);
-				return map;
+				assert(NULL != mapres);
+				if (!str_dict_strcmp(mapres, "code", "error")) {
+					const char *data_str = str_dict_get_value(mapres, "data");
+					fprintf(stderr, "%s", data_str);
+				}
+				return mapres;
 				break;
 			case PY_MARSHAL_TYPE_DICT:
 				// Do Nothing
-				assert(NULL == map); 
-				map = malloc(sizeof(struct hashmap));
-				str_dict_init(map);
+				assert(NULL == mapres); 
+				mapres = map;
+				str_dict_reset(mapres);
 				break;
 			default:
 				LOG_GITP4_CRITICAL("Not supported: %d\n",c);
-				die("Not supported\n"); 
+				die("Not supported\n");
 				goto _leave;
 		}
 	}
 	assert(NULL == kw);
 _leave:
-	if (NULL != map) {
-		str_dict_destroy(map);
-		free(map);
-	}
 	return NULL;
 }
 
