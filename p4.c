@@ -2043,7 +2043,7 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 					strbuf_insert(&filename, 0, "/", 1);
 				strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
 				safe_create_leading_directories_const(filename.buf);
-				fd = open(filename.buf, O_CREAT | O_WRONLY, 0666);
+				fd = open(filename.buf, O_CREAT | O_TRUNC | O_WRONLY, 0666);
 				if (fd < 0)
 					die("Error creating file %s", filename.buf);
 				if (!strcmp(str_dict_get_value(&map, "type"), "utf16")) {
