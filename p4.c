@@ -1642,6 +1642,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 		string_list_remove(&files_to_update->deleted, src_path.buf, 0);
 		break;
 	case 'D':
+		p4_sync_force_file(cli_path, src_path.buf);
 		string_list_insert(&files_to_update->deleted, src_path.buf);
 		string_list_remove(&files_to_update->added, src_path.buf, 0);
 		break;
