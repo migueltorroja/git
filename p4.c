@@ -367,6 +367,7 @@ static void p4_normalize_type(const char *legacy_type, struct strbuf *base_type,
 			!strcmp(legacy_type,"apple") ||
 			!strcmp(legacy_type,"resource") ||
 			!strcmp(legacy_type,"unicode") ||
+			!strcmp(legacy_type,"utf8") ||
 			!strcmp(legacy_type,"utf16")) {
 		strbuf_addstr(base_type, legacy_type);
 	}
@@ -428,6 +429,10 @@ static void p4_normalize_type(const char *legacy_type, struct strbuf *base_type,
 	}
 	else if (!strcmp(legacy_type,"xunicode")) {
 		strbuf_addf(base_type, "unicode");
+		strbuf_addf(mods,"+x");
+	}
+	else if (!strcmp(legacy_type,"xutf8")) {
+		strbuf_addf(base_type, "utf8");
 		strbuf_addf(mods,"+x");
 	}
 	else if (!strcmp(legacy_type,"xutf16")) {
