@@ -1944,6 +1944,26 @@ class P4Fetch(Command, P4UserMap):
         self.options = []
         self.description = ("Updates all the git branches that hold P4 imports  ")
         self.verbose = False
+	self.gitp4branch_to_p4branch = {}
+        cmdline = "git rev-parse --symbolic "
+        cmdline += " --remotes"
+        for line in read_pipe_lines(cmdline):
+            line = line.strip()
+
+            if not line.startswith('p4/') or line == "p4/HEAD":
+                continue
+            log = extractLogMessageFromGitCommit("refs/remotes/%s" % line)
+            settings = extractSettingsGitLog(log)
+	    self.gitp4branch_to_p4branch[line[3:]] = {'gitp4':settings["depot-paths"][0],
+		    'change':int(settings["change"])}
+    def streamP4FilelogCb(self,entry):
+	if (entry.has_key('code') and entry['code'] == 'error'):
+	    return 
+	if not entry.has_key('depotFile'):
+	    return
+	for k, v in self.gitp4branch_to_p4branch.iteritems():
+	    if entry['depotFile'].startswith(v['gitp4']):
+		v['needsupdate'] = True
     def run(self, args):
         cmdline = "git rev-parse --symbolic --branches "
         git_local_sha1_to_branch = {} 
@@ -1954,18 +1974,20 @@ class P4Fetch(Command, P4UserMap):
             if not git_local_sha1_to_branch.has_key(git_commit):
                 git_local_sha1_to_branch[git_commit] = []
             git_local_sha1_to_branch[git_commit].append(line)
-        cmdline = "git rev-parse --symbolic "
-        cmdline += " --remotes"
-        p4_branches = []
+	branches_to_check_filelog = ""
+	for k, v in self.gitp4branch_to_p4branch.iteritems():
+	    branches_to_check_filelog += "{}...@{},#head\n".format(v['gitp4'], v["change"]+1)
+	def streamP4Filelog(entry):
+	    self.streamP4FilelogCb(entry)
+	p4CmdList(["-x", "-", "filelog"],stdin=branches_to_check_filelog,
+		cb=streamP4Filelog)
 
-        for line in read_pipe_lines(cmdline):
-            line = line.strip()
-
-            if not line.startswith('p4/') or line == "p4/HEAD":
-                continue
-            p4_branches.append(line[3:])
-
-        for branch in p4_branches:  
+        for branch, v in self.gitp4branch_to_p4branch.iteritems():  
+	    if not v.has_key('needsupdate'):
+		continue	
+	    if not v['needsupdate']:
+		continue
+	    v['needsupdate'] = False
             head_before_update = read_pipe(["git","rev-parse","p4/"+branch])
             head_before_update = head_before_update.strip()
             sync = P4Sync()
