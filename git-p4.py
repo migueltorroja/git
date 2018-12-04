@@ -176,6 +176,8 @@ def get_md5_p4_safe_method(headType,depotFile,headChange,digest=None,**kargs):
         recompute_hash = True
     elif 'utf16' == p4type: 
         recompute_hash = True
+    elif 'utf8' == p4type:
+        recompute_hash = True
     if recompute_hash:
         c ='p4 print -k -q -o - "{}@{}"'.format(depotFile,headChange)
         p = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=True)
