@@ -15,6 +15,22 @@
 #include "utf8.h"
 
 
+struct depot_file_t
+{
+	struct strbuf depot_path_file;
+	unsigned int chg_rev;
+	int is_revision;
+	struct list_head lhead;
+};
+
+#define DEPOT_FILE_INIT {STRBUF_INIT, 0, 0}
+
+struct depot_file_pair_t
+{
+	struct depot_file_t a;
+	struct depot_file_t b;
+	struct list_head lhead;
+};
 
 #define PY_MARSHAL_TYPE_DICT    '{'
 #define PY_MARSHAL_TYPE_STRING  's'
@@ -279,6 +295,30 @@ static int str_dict_strcmp(struct hashmap *map, const char *key, const char *val
 	else if (!valcmp)
 		return 1;
 	return strcmp(val_str, valcmp);
+}
+
+static void _strbuf_ch_translate(struct strbuf *dst, struct strbuf *src, char inc, char outc)
+{
+	void *s_p = src->buf;
+	void *s_end = src->buf + src->len;
+	strbuf_release(dst);
+	while (s_p && (s_p < s_end)) {
+		void *s_find = memchr(s_p, inc, s_end - s_p);
+		if (s_find) {
+			strbuf_add(dst, s_p, s_find - s_p);
+			strbuf_addch(dst, outc);
+			s_p = s_find + 1;
+		}
+		else {
+			strbuf_add(dst, s_p, s_end - s_p);
+			s_p = s_end;
+		}
+	}
+}
+
+static void _strbuf_insert_str(struct strbuf *dst, const char *str)
+{
+	strbuf_insert(dst, 0, str, strlen(str));
 }
 
 static void p4_start_command(struct child_process *cmd)
@@ -795,6 +835,42 @@ int extract_p4_settings_git_log(struct hashmap *map, const char *log)
 	}
 	string_list_clear(&colon_list,0);
 	return 0;
+}
+
+void strbuf_add_gitp4(struct strbuf *sb, struct depot_file_t *p)
+{
+	if (p->is_revision)
+		die("Revision not supported");
+	strbuf_addf(sb, "[git-p4: depot-paths = \"%s", p->depot_path_file.buf);
+	if (!ends_with(p->depot_path_file.buf, "/"))
+		strbuf_addch(sb, '/');
+	strbuf_addf(sb, "\": change = %d]", p->chg_rev);
+}
+
+int find_p4_depot_commit(struct strbuf *strb_commit, struct depot_file_t *p)
+{
+	struct argv_array gitargs = ARGV_ARRAY_INIT;
+	struct strbuf git_p4_line = STRBUF_INIT;
+	int rout = -1;
+	strbuf_add_gitp4(&git_p4_line, p);
+	argv_array_push(&gitargs, "log");
+	argv_array_push(&gitargs, "--format=format:%H");
+	argv_array_push(&gitargs, "--first-parent");
+	argv_array_push(&gitargs, "--remotes=p4");
+	argv_array_push(&gitargs, "-1");
+	argv_array_push(&gitargs, "-F");
+	argv_array_push(&gitargs, "--grep");
+	argv_array_push(&gitargs, git_p4_line.buf);
+	strbuf_reset(strb_commit);
+	rout = git_cmd_read_pipe_full(gitargs.argv, strb_commit);
+	strbuf_trim(strb_commit);
+	if (strb_commit->len)
+		rout = 0;
+	else
+		rout = -1;
+	strbuf_release(&git_p4_line);
+	argv_array_clear(&gitargs);
+	return rout;
 }
 
 int find_p4_parent_commit(struct strbuf *strb_commit, struct hashmap *p4settings)
@@ -1554,6 +1630,18 @@ static void get_p4change_cb(struct hashmap *map, void *arg)
 		str_dict_copy(dst, map);
 }
 
+static void get_p4describe(struct hashmap *change_entry, unsigned int changelist)
+{
+	struct argv_array p4args = ARGV_ARRAY_INIT;
+	argv_array_push(&p4args, "describe");
+	argv_array_pushf(&p4args, "%u", changelist);
+	p4_cmd_run(p4args.argv, NULL, get_p4change_cb, change_entry);
+	if (!str_dict_get_value(change_entry, "code"))
+		die("Failed to decode output of p4 describe");
+	argv_array_clear(&p4args);
+}
+
+
 static void get_p4change(struct hashmap *change_entry, unsigned int changelist)
 {
 	struct argv_array p4args = ARGV_ARRAY_INIT;
@@ -1987,23 +2075,6 @@ static int p4submit_git_config(const char *k, const char *v, void *cb)
 		p4submit_options.detect_copies_harder = git_config_bool(k,v);
 	return 0;
 }
-
-
-struct depot_file_t
-{
-	struct strbuf depot_path_file;
-	unsigned int chg_rev;
-	int is_revision;
-	struct list_head lhead;
-};
-
-struct depot_file_pair_t
-{
-	struct depot_file_t a;
-	struct depot_file_t b;
-	struct list_head lhead;
-};
-
 
 
 struct dump_file_state
@@ -2451,6 +2522,341 @@ void p4shelve_cmd_init(struct command_t *pcmd)
 	p4submit_options.shelve = 1;
 }
 
+/* This functions expects a dictionary with at least these file 
+ * branch:                (refs/heads/... or refs/remotes/p4/...)
+ * msg:                   (with the message of the commit)
+ * committer:              (John Smith <john.smith@gmail.com> )
+ * author(optional):      (same format as committer)
+ * base_commit(optional): (If not specified, it doesn't have any parent)
+ * time:                  (unix epochs)
+ */
+int git_commit(struct hashmap *map)
+{
+	struct child_process git_fast_import = CHILD_PROCESS_INIT;
+	const char *msg = str_dict_get_value(map, "msg");
+	argv_array_push(&git_fast_import.args, "git");
+	argv_array_push(&git_fast_import.args, "fast-import");
+	git_fast_import.in = -1;
+	if (!str_dict_get_value(map, "branch"))
+		die("No branch provided");
+	if (!str_dict_get_value(map, "msg"))
+		die("No msg provided");
+	if (!str_dict_get_value(map, "committer"))
+		die("No committer provided");
+	if (!str_dict_get_value(map, "time"))
+		die("No time provided");
+	if (start_command(&git_fast_import)) {
+		die("cannot start git fast-import");
+	}
+	FILE *fp = fdopen(git_fast_import.in, "w");
+	fprintf(fp, "commit %s\n", str_dict_get_value(map, "branch"));
+	fprintf(fp, "committer %s %"PRIuMAX" +0000\n",
+			str_dict_get_value(map, "committer"),
+			atoi(str_dict_get_value(map, "time")));
+	fprintf(fp, "data %"PRIuMAX"\n", strlen(msg));
+	fprintf(fp, "%s\n", msg);
+	if (str_dict_get_value(map, "base_commit"))
+		fprintf(fp, "from %s\n", str_dict_get_value(map, "base_commit"));
+	fprintf(fp, "\n");
+	fclose(fp);
+	return finish_command(&git_fast_import);
+}
+
+int git_update_ref(const char *new_ref, const char *commit)
+{
+	struct child_process git_upd_ref = CHILD_PROCESS_INIT;
+	argv_array_push(&git_upd_ref.args, "git");
+	argv_array_push(&git_upd_ref.args, "update-ref");
+	argv_array_push(&git_upd_ref.args, new_ref);
+	argv_array_push(&git_upd_ref.args, commit);
+	if (start_command(&git_upd_ref)) {
+		die("cannot start git update-ref");
+	}
+	return finish_command(&git_upd_ref);
+}
+
+static int p4_check_identical_branches(struct depot_file_pair_t *depot_pair)
+{
+	struct depot_file_t *a = &depot_pair->a;
+	struct depot_file_t *b = &depot_pair->b;
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	int are_identical = 1;
+	if (!a->depot_path_file.len)
+		return 0;
+	if (!a->chg_rev)
+		return 0;
+	if (!b->depot_path_file.len)
+		return 0;
+	if (!b->chg_rev)
+		return 0;
+	child_p4.out = -1;
+	str_dict_init(&map);
+	argv_array_push(&child_p4.args, "diff2");
+	argv_array_pushf(&child_p4.args, "%s...@%u", a->depot_path_file.buf, a->chg_rev);
+	argv_array_pushf(&child_p4.args, "%s...@%u", b->depot_path_file.buf, b->chg_rev);
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out)) {
+		if (!str_dict_strcmp(&map, "code", "info"))
+			continue;
+		else if ((!str_dict_strcmp(&map, "code", "stat"))
+					&& (!str_dict_strcmp(&map, "status", "identical"))) {
+			continue;
+		}
+		if (IS_LOG_DEBUG_ALLOWED) {
+			LOG_GITP4_DEBUG("Branches not identical\n");
+			str_dict_print(p4_verbose_debug.fp, &map);
+		}
+		are_identical = 0;
+		break;
+	}
+	close(child_p4.out);
+	finish_command(&child_p4);
+	str_dict_destroy(&map);
+	return are_identical;
+}
+
+static void p4discover_branches_find_p4_parent(struct depot_file_pair_t *depot_pair,
+		struct strbuf *sub_file_name)
+{
+	const char *p = NULL;
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	unsigned int count_changes = 0;
+	unsigned int base_candidate = 0;
+	child_p4.out = -1;
+	str_dict_init(&map);
+	argv_array_push(&child_p4.args, "changes");
+	argv_array_push(&child_p4.args, "-m2");
+	argv_array_push(&child_p4.args, "-i");
+	argv_array_pushf(&child_p4.args, "%s...@%d",depot_pair->a.depot_path_file.buf, depot_pair->a.chg_rev);
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out)) {
+		count_changes ++;
+		if ((count_changes == 1) &&
+				(depot_pair->a.chg_rev != atoi(str_dict_get_value(&map, "change"))))
+			break;
+		else if (count_changes == 2) {
+			base_candidate = atoi(str_dict_get_value(&map, "change"));
+		}
+	}
+	close(child_p4.out);
+	finish_command(&child_p4);
+	get_p4describe(&map, base_candidate);
+	if (IS_LOG_DEBUG_ALLOWED) {
+		LOG_GITP4_DEBUG("p4 describe %"PRIuMAX"\n", base_candidate);
+		str_dict_print(p4_verbose_debug.fp, &map);
+	}
+	for (count_changes = 0, p = str_dict_get_value(&map, "depotFile0"); p;
+			p = str_dict_get_valuef(&map, "depotFile%u", ++count_changes)) {
+		LOG_GITP4_DEBUG("depotFile:%s (%u)\n", p, count_changes);
+		if (starts_with(p, depot_pair->b.depot_path_file.buf)) {
+			depot_pair->b.chg_rev = base_candidate;
+			depot_pair->b.is_revision = 0;
+			break;
+		}
+	}
+	str_dict_destroy(&map);
+}
+
+static void p4create_new_p4_branch(struct strbuf *lbranch, struct depot_file_pair_t *dp)
+{
+	struct p4_user_map_t p4_user_map;
+	struct strbuf base_sha = STRBUF_INIT;
+	struct strbuf user = STRBUF_INIT;
+	struct strbuf gitp4_line = STRBUF_INIT;
+	struct hashmap m_describe;
+	str_dict_init(&m_describe);
+	p4usermap_init(&p4_user_map);
+	find_p4_depot_commit(&base_sha, &dp->b);
+	if (!base_sha.len) {
+		LOG_GITP4_INFO("No associate commit found\n");
+		goto _leave;
+	}
+	get_p4describe(&m_describe, dp->a.chg_rev);
+	if (!str_dict_get_value(&m_describe, "desc")) {
+		LOG_GITP4_INFO("No desc found\n");
+		goto _leave;
+	}
+	if (!str_dict_get_value(&m_describe, "user")) {
+		LOG_GITP4_INFO("No user found\n");
+		goto _leave;
+	}
+	if (!str_dict_get_value(&m_describe, "user")) {
+		LOG_GITP4_INFO("No user found\n");
+		goto _leave;
+	}
+	if (!str_dict_get_value(&m_describe, "time")) {
+		LOG_GITP4_INFO("No time found\n");
+		goto _leave;
+	}
+	LOG_GITP4_DEBUG("sha: %s\n", base_sha.buf);
+	LOG_GITP4_DEBUG("desc: %s\n", str_dict_get_value(&m_describe, "desc"));
+	LOG_GITP4_DEBUG("user: %s\n", str_dict_get_value(&m_describe, "user"));
+	LOG_GITP4_DEBUG("time: %s\n", str_dict_get_value(&m_describe, "time"));
+	if (str_dict_get_value(&p4_user_map.users, str_dict_get_value(&m_describe, "user")))
+		strbuf_addstr(&user,
+				str_dict_get_value(&p4_user_map.users, str_dict_get_value(&m_describe, "user")));
+	else
+		strbuf_addf(&user, "%s <>", str_dict_get_value(&m_describe, "user"));
+	LOG_GITP4_DEBUG("user full address %s\n",
+			str_dict_get_value(&p4_user_map.users, str_dict_get_value(&m_describe, "user")));
+	str_dict_set_key_val(&m_describe, "branch", lbranch->buf);
+	strbuf_add_gitp4(&gitp4_line, &dp->a);
+	str_dict_set_key_valf(&m_describe, "msg", "%s\n%s\n",
+			str_dict_get_value(&m_describe, "desc"), gitp4_line.buf);
+	str_dict_set_key_val(&m_describe, "committer", user.buf);
+	str_dict_set_key_val(&m_describe, "base_commit", base_sha.buf);
+	git_commit(&m_describe);
+_leave:
+	str_dict_destroy(&m_describe);
+	strbuf_release(&gitp4_line);
+	strbuf_release(&user);
+	strbuf_release(&base_sha);
+	p4usermap_deinit(&p4_user_map);
+}
+
+static void p4discover_branches_find_branches(struct list_head *new_branches, const char *str_pattern)
+{
+	const char *p = NULL;
+	const char *ellipsis = "/.../";
+	struct strbuf sub_file_name = STRBUF_INIT;
+	struct strbuf common_depot_base_name = STRBUF_INIT;
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	struct list_head *pos;
+	child_p4.out = -1;
+	str_dict_init(&map);
+
+	strbuf_addstr(&sub_file_name, str_pattern);
+	strbuf_addstr(&common_depot_base_name, str_pattern);
+	if ((p = memchr(sub_file_name.buf, '@', sub_file_name.len)))
+		strbuf_setlen(&sub_file_name, p-sub_file_name.buf);
+	if ((p = memchr(sub_file_name.buf, '#', sub_file_name.len)))
+		strbuf_setlen(&sub_file_name, p-sub_file_name.buf);
+	if ((p = memmem(sub_file_name.buf, sub_file_name.len, ellipsis, strlen(ellipsis))))
+		strbuf_splice(&sub_file_name, 0, p - sub_file_name.buf + strlen(ellipsis),
+				"", 0);
+	else
+		goto _leave;
+
+	if ((p = memmem(common_depot_base_name.buf, common_depot_base_name.len,
+				   	ellipsis, strlen(ellipsis))))
+	{
+		strbuf_setlen(&common_depot_base_name, p-common_depot_base_name.buf);
+		strbuf_addch(&common_depot_base_name, '/');
+	}
+
+	argv_array_push(&child_p4.args, "filelog");
+	argv_array_push(&child_p4.args, str_pattern);
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out)) {
+			struct depot_file_t branch_depot_path = DEPOT_FILE_INIT;
+			struct depot_file_t branch_base_depot_path = DEPOT_FILE_INIT;
+			/* str_dict_print(stdout, &map); */
+			if (str_dict_strcmp(&map, "action0", "branch"))
+				continue;
+			if (str_dict_strcmp(&map, "rev0", "1"))
+				continue;
+			if (!str_dict_get_value(&map, "file0,0"))
+				continue;
+			assert(str_dict_get_value(&map, "depotFile"));
+			assert(str_dict_get_value(&map, "change0"));
+			depot_file_set(&branch_depot_path,
+					str_dict_get_value(&map, "depotFile"),
+					atoi(str_dict_get_value(&map, "change0")), 0);
+			depot_file_set(&branch_base_depot_path,
+					str_dict_get_value(&map, "file0,0"),
+					0, 0);
+			strbuf_strip_suffix(&branch_depot_path.depot_path_file, sub_file_name.buf);
+			strbuf_strip_suffix(&branch_base_depot_path.depot_path_file, sub_file_name.buf);
+			LOG_GITP4_DEBUG("After stripping: %s (%s)\n",
+					branch_depot_path.depot_path_file.buf, sub_file_name.buf);
+			list_depot_files_pair_add(new_branches, &branch_depot_path, &branch_base_depot_path);
+			depot_file_destroy(&branch_depot_path);
+			depot_file_destroy(&branch_base_depot_path);
+	}
+	close(child_p4.out);
+	finish_command(&child_p4);
+	list_for_each(pos, new_branches) {
+		struct depot_file_pair_t *dp;
+		struct strbuf local_branch_name = STRBUF_INIT;
+		struct strbuf p4_remote_branch_name = STRBUF_INIT;
+		dp = list_entry(pos, struct depot_file_pair_t, lhead);
+		strbuf_addbuf(&local_branch_name, &dp->a.depot_path_file);
+		strbuf_strip_suffix(&local_branch_name, "/");
+		LOG_GITP4_DEBUG("Local Branch found: %s (prefix to be ignored: %s\n",
+				local_branch_name.buf, common_depot_base_name.buf);
+		if (starts_with(local_branch_name.buf, common_depot_base_name.buf)) {
+			strbuf_remove(&local_branch_name, 0, common_depot_base_name.len);
+			_strbuf_ch_translate(&p4_remote_branch_name, &local_branch_name, '/', '_');
+			_strbuf_insert_str(&local_branch_name, "refs/heads/");
+			_strbuf_insert_str(&p4_remote_branch_name, "refs/remotes/p4/");
+			LOG_GITP4_DEBUG("Local branch: %s p4 remote: %s\n",
+					local_branch_name.buf, p4_remote_branch_name.buf);
+		}
+		if (!branch_exists(local_branch_name.buf) &&
+				!branch_exists(p4_remote_branch_name.buf)) {
+			p4discover_branches_find_p4_parent(dp, &sub_file_name);
+			LOG_GITP4_DEBUG("diff2 %s...@%u %s...@%u",
+					dp->a.depot_path_file.buf, dp->a.chg_rev,
+					dp->b.depot_path_file.buf, dp->b.chg_rev);
+			if (!p4_check_identical_branches(dp))
+				LOG_GITP4_DEBUG(" (Not identical branches, skipped)\n");
+			else {
+				LOG_GITP4_DEBUG(" (Identical branches)\n");
+				LOG_GITP4_DEBUG("git branch will be created\n");
+				p4create_new_p4_branch(&local_branch_name, dp);
+				git_update_ref(p4_remote_branch_name.buf, local_branch_name.buf);
+			}
+		}
+		else {
+			LOG_GITP4_DEBUG("Local branch for %s already exists\n",
+					local_branch_name.buf);
+		}
+		strbuf_release(&local_branch_name);
+		strbuf_release(&p4_remote_branch_name);
+	}
+_leave:
+	str_dict_destroy(&map);
+	strbuf_release(&sub_file_name);
+	strbuf_release(&common_depot_base_name);
+}
+
+static void p4discover_branches_cmd_run(command_t *pcmd, int gargc, const char **gargv)
+{
+	struct list_head list_branch_depots = LIST_HEAD_INIT(list_branch_depots);
+	struct list_head *pos;
+	if (gargc <= 1)
+		goto _leave;
+
+	p4discover_branches_find_branches(&list_branch_depots, gargv[1]);
+	list_for_each(pos, &list_branch_depots) {
+		struct depot_file_pair_t *dp;
+		dp = list_entry(pos, struct depot_file_pair_t, lhead);
+		if (IS_LOG_DEBUG_ALLOWED) {
+			fprintf(p4_verbose_debug.fp, "Branch ");
+			depot_file_printf(p4_verbose_debug.fp, &dp->a);
+			fprintf(p4_verbose_debug.fp, " Parent ");
+			depot_file_printf(p4_verbose_debug.fp, &dp->b);
+			fprintf(p4_verbose_debug.fp, "\n");
+		}
+	}
+_leave:
+	list_depot_files_pair_destroy(&list_branch_depots);
+}
+
+void p4discover_branches_cmd_init(struct command_t *pcmd)
+{
+	strbuf_init(&pcmd->strb_usage, 256);
+	strbuf_addf(&pcmd->strb_usage, "this command will try to find new branches and its corresponding parent commit");
+	strbuf_addf(&pcmd->strb_usage, "Usage: git-p4 discover-branch p4-pattern");
+	pcmd->needs_git = 0;
+	pcmd->verbose = 0;
+	pcmd->run_fn = p4discover_branches_cmd_run;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->data = 0;
+}
 
 static int git_rm(const char *filename)
 {
@@ -2748,6 +3154,7 @@ const command_list_t cmd_lst[] =
 	{"shelve", p4shelve_cmd_init},
 	{"format-patch", p4format_patch_cmd_init},
 	{"unshelve", p4unshelve_cmd_init},
+	{"discover-branches", p4discover_branches_cmd_init},
 };
 
 void print_usage(FILE *fp, const char *progname)
