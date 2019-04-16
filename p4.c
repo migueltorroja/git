@@ -738,7 +738,7 @@ static int keyval_equal_assign(keyval_t *kw, const char *str)
 {
 	struct strbuf **strbuf_list = NULL;
 	struct strbuf **sb_iter = NULL;
-	struct strbuf *sb, *key, *val;
+	struct strbuf *key, *val;
 	int ret = -1;
 	strbuf_list = strbuf_split_str(str, '=', 0);
 	if (!strbuf_list)
@@ -997,7 +997,6 @@ static void p4_where_cb(struct hashmap *map, void *arg)
 static int p4_where(const char *depot_path, struct strbuf *client_path)
 {
 	struct strbuf strb_depotpath = STRBUF_INIT;
-	struct depot_client_path_t arg_cb = {NULL, client_path};
 	int ret = -1;
 	strbuf_reset(client_path);
 	strbuf_addstr(&strb_depotpath, depot_path);
@@ -1795,7 +1794,6 @@ leave:
 
 void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 {
-	int i;
 	struct hashmap map;
 	struct strbuf strb_master = STRBUF_INIT;
 	struct strbuf commits = STRBUF_INIT;
@@ -2035,7 +2033,6 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 			str_dict_print(p4_verbose_debug.fp, &map);
 		if (!strcmp(str_dict_get_value(&map, "code"), "stat")) {
 			struct strbuf filename = STRBUF_INIT;
-			const char *path_in_subdir = NULL;
 			if (fd >= 0)
 				close(fd);
 			fd = -1;
@@ -2604,7 +2601,7 @@ void keyval_print(FILE *fp, keyval_t *kw)
 	size_t i;
 	if (NULL == fp)
 		fp = stdout;
-	fprintf(fp,"'%.*s' (len:%d): ", (int)kw->key.len, kw->key.buf, kw->val.len);
+	fprintf(fp,"'%.*s' (len:%"PRIuMAX"): ", (int)kw->key.len, kw->key.buf, kw->val.len);
 	fprintf(fp,"'");
 	for (i=0;i<kw->val.len;i++) {
 		char c = kw->val.buf[i];
