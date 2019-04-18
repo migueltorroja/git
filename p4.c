@@ -338,6 +338,13 @@ static void p4_start_command(struct child_process *cmd)
 		argv_array_pushf(&nenv, "PWD=%s",cmd->dir);
 		cmd->env = nenv.argv;
 	}
+	if (IS_LOG_DEBUG_ALLOWED) {
+	 const char **argv = cmd->args.argv;
+	 LOG_GITP4_DEBUG("command:");
+	 for (; *argv; argv++)
+		LOG_GITP4_DEBUG(" %s", *argv);
+	 LOG_GITP4_DEBUG("\n");
+	}
 	if (start_command(cmd))
 		die("cannot start p4 process");
 	argv_array_clear(&nargs);
