@@ -2716,7 +2716,7 @@ _leave:
 	p4usermap_deinit(&p4_user_map);
 }
 
-static void p4discover_branches_find_branches(struct list_head *new_branches, const char *str_pattern)
+static void p4discover_branches_find_branches(struct list_head *new_branches, const char *str_pattern, const char *local_branch_pattern)
 {
 	const char *p = NULL;
 	const char *ellipsis = "/.../";
@@ -2780,21 +2780,32 @@ static void p4discover_branches_find_branches(struct list_head *new_branches, co
 	finish_command(&child_p4);
 	list_for_each(pos, new_branches) {
 		struct depot_file_pair_t *dp;
+		struct strbuf sb_ellipsis_match = STRBUF_INIT;
 		struct strbuf local_branch_name = STRBUF_INIT;
 		struct strbuf p4_remote_branch_name = STRBUF_INIT;
 		dp = list_entry(pos, struct depot_file_pair_t, lhead);
-		strbuf_addbuf(&local_branch_name, &dp->a.depot_path_file);
-		strbuf_strip_suffix(&local_branch_name, "/");
+		strbuf_addbuf(&sb_ellipsis_match, &dp->a.depot_path_file);
+		strbuf_strip_suffix(&sb_ellipsis_match, "/");
 		LOG_GITP4_DEBUG("Local Branch found: %s (prefix to be ignored: %s\n",
-				local_branch_name.buf, common_depot_base_name.buf);
-		if (starts_with(local_branch_name.buf, common_depot_base_name.buf)) {
-			strbuf_remove(&local_branch_name, 0, common_depot_base_name.len);
-			_strbuf_ch_translate(&p4_remote_branch_name, &local_branch_name, '/', '_');
-			_strbuf_insert_str(&local_branch_name, "refs/heads/");
-			_strbuf_insert_str(&p4_remote_branch_name, "refs/remotes/p4/");
-			LOG_GITP4_DEBUG("Local branch: %s p4 remote: %s\n",
-					local_branch_name.buf, p4_remote_branch_name.buf);
-		}
+				sb_ellipsis_match.buf, common_depot_base_name.buf);
+
+		if (starts_with(sb_ellipsis_match.buf, common_depot_base_name.buf))
+			strbuf_remove(&sb_ellipsis_match, 0, common_depot_base_name.len);
+
+		if (local_branch_pattern)
+			strbuf_addf(&local_branch_name, "%s", local_branch_pattern);
+		else
+			strbuf_addf(&local_branch_name, "...");
+
+		if ((p = memmem(local_branch_name.buf, local_branch_name.len, "...", 3)))
+			strbuf_splice(&local_branch_name, p - local_branch_name.buf, 3,
+					sb_ellipsis_match.buf, sb_ellipsis_match.len);
+
+		_strbuf_ch_translate(&p4_remote_branch_name, &local_branch_name, '/', '_');
+		_strbuf_insert_str(&local_branch_name, "refs/heads/");
+		_strbuf_insert_str(&p4_remote_branch_name, "refs/remotes/p4/");
+		LOG_GITP4_DEBUG("Local branch: %s p4 remote: %s\n",
+				local_branch_name.buf, p4_remote_branch_name.buf);
 		if (!branch_exists(local_branch_name.buf) &&
 				!branch_exists(p4_remote_branch_name.buf)) {
 			p4discover_branches_find_p4_parent(dp, &sub_file_name);
@@ -2814,6 +2825,7 @@ static void p4discover_branches_find_branches(struct list_head *new_branches, co
 			LOG_GITP4_DEBUG("Local branch for %s already exists\n",
 					local_branch_name.buf);
 		}
+		strbuf_release(&sb_ellipsis_match);
 		strbuf_release(&local_branch_name);
 		strbuf_release(&p4_remote_branch_name);
 	}
@@ -2827,10 +2839,13 @@ static void p4discover_branches_cmd_run(command_t *pcmd, int gargc, const char *
 {
 	struct list_head list_branch_depots = LIST_HEAD_INIT(list_branch_depots);
 	struct list_head *pos;
+	const char *local_branch_pattern = NULL;
 	if (gargc <= 1)
 		goto _leave;
+	if (gargc > 2)
+		local_branch_pattern = gargv[2];
 
-	p4discover_branches_find_branches(&list_branch_depots, gargv[1]);
+	p4discover_branches_find_branches(&list_branch_depots, gargv[1], local_branch_pattern);
 	list_for_each(pos, &list_branch_depots) {
 		struct depot_file_pair_t *dp;
 		dp = list_entry(pos, struct depot_file_pair_t, lhead);
