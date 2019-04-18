@@ -2760,12 +2760,20 @@ static void p4discover_branches_find_branches(struct list_head *new_branches, co
 	while (py_marshal_parse(&map, child_p4.out)) {
 			struct depot_file_t branch_depot_path = DEPOT_FILE_INIT;
 			struct depot_file_t branch_base_depot_path = DEPOT_FILE_INIT;
+			int indx = 0;
+			const char *branch_from = NULL;
 			/* str_dict_print(stdout, &map); */
 			if (str_dict_strcmp(&map, "action0", "branch"))
 				continue;
 			if (str_dict_strcmp(&map, "rev0", "1"))
 				continue;
-			if (!str_dict_get_value(&map, "file0,0"))
+			for (;(branch_from = str_dict_get_valuef(&map, "file0,%d", indx)); ++indx) {
+				if (strcmp(str_dict_get_valuef(&map, "how0,%d", indx), "branch from"))
+					branch_from = NULL;
+				else
+					break;
+			}
+			if (!branch_from)
 				continue;
 			assert(str_dict_get_value(&map, "depotFile"));
 			assert(str_dict_get_value(&map, "change0"));
@@ -2773,7 +2781,7 @@ static void p4discover_branches_find_branches(struct list_head *new_branches, co
 					str_dict_get_value(&map, "depotFile"),
 					atoi(str_dict_get_value(&map, "change0")), 0);
 			depot_file_set(&branch_base_depot_path,
-					str_dict_get_value(&map, "file0,0"),
+					branch_from,
 					0, 0);
 			strbuf_strip_suffix(&branch_depot_path.depot_path_file, sub_file_name.buf);
 			strbuf_strip_suffix(&branch_base_depot_path.depot_path_file, sub_file_name.buf);
