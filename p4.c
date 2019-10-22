@@ -20,6 +20,7 @@ struct depot_file_t
 	struct strbuf depot_path_file;
 	unsigned int chg_rev;
 	int is_revision;
+	unsigned mode;
 	struct list_head lhead;
 };
 
@@ -31,6 +32,39 @@ struct depot_file_pair_t
 	struct depot_file_t b;
 	struct list_head lhead;
 };
+
+
+struct depot_changelist_desc_t
+{
+	struct strbuf change;
+	struct strbuf desc;
+	struct strbuf time;
+	struct strbuf committer;
+	struct strbuf depot_base;
+	struct list_head list_of_depot_files;
+};
+
+#define INIT_DEPOT_CHANGELIST_DESC(ptr) do {\
+	strbuf_init(&(ptr)->change, 0); \
+	strbuf_init(&(ptr)->desc, 0); \
+	strbuf_init(&(ptr)->time, 0); \
+	strbuf_init(&(ptr)->committer, 0); \
+	strbuf_init(&(ptr)->depot_base, 0); \
+	INIT_LIST_HEAD(&(ptr)->list_of_depot_files); \
+}while(0)
+
+
+struct depot_changelist_diff_t
+{
+	struct depot_changelist_desc_t current;
+	struct depot_changelist_desc_t prev;
+};
+
+#define INIT_DEPOT_CHANGELIST_DIFF(ptr) do {\
+	INIT_DEPOT_CHANGELIST_DESC(&(ptr)->current); \
+	INIT_DEPOT_CHANGELIST_DESC(&(ptr)->prev); \
+}while(0)
+
 
 #define PY_MARSHAL_TYPE_DICT    '{'
 #define PY_MARSHAL_TYPE_STRING  's'
@@ -46,7 +80,7 @@ typedef struct keyval_t{
 } keyval_t;
 
 keyval_t *keyval_init(keyval_t *kw);
-void keyval_copy(keyval_t *dst, keyval_t *src);
+void keyval_copy(keyval_t *dst, const keyval_t *src);
 struct hashmap *py_marshal_parse(struct hashmap *map, int fd);
 static void str_dict_destroy(struct hashmap *map);
 void keyval_print(FILE *fp, keyval_t *kw);
@@ -70,7 +104,12 @@ typedef struct command_t
 	void *          data;
 } command_t;
 
-
+typedef struct p4_user_map_t {
+	struct strbuf my_p4_user_id;
+	struct hashmap users;
+	struct hashmap emails;
+	int user_map_from_perfroce_server;
+} p4_user_map_t;
 
 struct p4_verbose_debug_t {
 	unsigned int verbose_level;
@@ -84,6 +123,7 @@ struct p4_verbose_debug_t {
 #define P4_VERBOSE_INIT {0,NULL}
 
 struct p4_verbose_debug_t p4_verbose_debug = P4_VERBOSE_INIT;
+struct p4_user_map_t *p4usermap_cached;
 
 void p4_verbose_init(struct p4_verbose_debug_t *p4verbose, int level, FILE *fp)
 {
@@ -158,13 +198,13 @@ void cmd_print_usage(FILE *fp, command_t *pcmd)
 }
 
 static int p4keyval_cmp(const void *userdata,
-		const void *entry,
-		const void *entry_or_key,
+		const struct hashmap_entry *entry,
+		const struct hashmap_entry *entry_or_key,
 		const void *keydata)
 {
-	struct keyval_t *e1 = (struct keyval_t *) entry;
-	struct keyval_t *e2 = (struct keyval_t *) entry_or_key;
-	return strcmp(e1->key.buf, keydata ? keydata : e2->key.buf); 
+	const struct keyval_t *e1 = container_of(entry, const struct keyval_t, ent);
+	const struct keyval_t *e2 = container_of(entry_or_key, const struct keyval_t, ent);
+	return strcmp(e1->key.buf, keydata ? keydata : e2->key.buf);
 }
 
 
@@ -177,11 +217,11 @@ static void str_dict_init(struct hashmap *map)
 static void str_dict_destroy(struct hashmap *map)
 {
 	struct hashmap_iter hm_iter;
+	struct hashmap_entry *hm_elem;
 	hashmap_iter_init(map, &hm_iter);
-	keyval_t *kw;
-	while ((kw = hashmap_iter_next(&hm_iter)))
-		keyval_release(kw);
-	hashmap_free(map,0);
+	while ((hm_elem = hashmap_iter_next(&hm_iter)))
+		keyval_release(container_of(hm_elem, keyval_t, ent));
+	hashmap_free(map);
 }
 
 
@@ -193,11 +233,11 @@ static void str_dict_reset(struct hashmap *map)
 
 static void str_dict_put_kw(struct hashmap *map, keyval_t *kw)
 {
-	keyval_t *prev_kw = NULL;
-	hashmap_entry_init(kw,strhash(kw->key.buf));
-	while ((prev_kw = hashmap_remove(map,kw, kw->key.buf)))
-		keyval_release(prev_kw);
-	hashmap_put(map,kw);
+	struct hashmap_entry *prev_entry = NULL;
+	hashmap_entry_init(&kw->ent, strhash(kw->key.buf));
+	while ((prev_entry = hashmap_remove(map, &kw->ent, kw->key.buf)))
+		keyval_release(container_of(prev_entry, keyval_t, ent));
+	hashmap_put(map, &kw->ent);
 }
 
 __attribute__((format (printf,3,4)))
@@ -219,9 +259,9 @@ static void str_dict_set_key_val(struct hashmap *map, const char *key, const cha
 
 static const keyval_t *str_dict_get_kw(struct hashmap *map, const char *str)
 {
-	keyval_t *kw;
-	kw = hashmap_get_from_hash(map, strhash(str), str);
-	return kw;
+	struct hashmap_entry *entry;
+	entry = hashmap_get_from_hash(map, strhash(str), str);
+	return container_of(entry, keyval_t, ent);
 }
 
 static const char *str_dict_get_value(struct hashmap *map, const char *str)
@@ -255,14 +295,14 @@ static void str_dict_print(FILE *fp, struct hashmap *map)
 	{
 		fprintf(fp,"{");
 		struct hashmap_iter hm_iter;
-		keyval_t *kw;
+		struct hashmap_entry *entry;
 		hashmap_iter_init(map, &hm_iter);
-		kw = hashmap_iter_next(&hm_iter);
-		assert(NULL != kw); 
+		entry = hashmap_iter_next(&hm_iter);
+		assert(NULL != entry);
 		for (;;) {
-			keyval_print(fp, kw);
-			kw = hashmap_iter_next(&hm_iter);
-			if (kw)
+			keyval_print(fp, container_of(entry, keyval_t, ent));
+			entry = hashmap_iter_next(&hm_iter);
+			if (entry)
 				fprintf(fp,", ");
 			else
 				break;
@@ -271,16 +311,21 @@ static void str_dict_print(FILE *fp, struct hashmap *map)
 	} 
 }
 
+static void str_dict_copy_kw(struct hashmap *dst, const keyval_t *kw)
+{
+	keyval_t *copykw = keyval_init(NULL);
+	keyval_copy(copykw, kw);
+	str_dict_put_kw(dst, copykw);
+}
+
 static void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 {
 	str_dict_reset(dst);
-	keyval_t *kw;
+	struct hashmap_entry *entry;
 	struct hashmap_iter hm_iter;
 	hashmap_iter_init(src, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
-		keyval_t *copykw = keyval_init(NULL);
-		keyval_copy(copykw, kw);
-		str_dict_put_kw(dst, copykw);
+	while ((entry = hashmap_iter_next(&hm_iter))) {
+		str_dict_copy_kw(dst, container_of(entry, keyval_t, ent));
 	}
 }
 
@@ -295,6 +340,21 @@ static int str_dict_strcmp(struct hashmap *map, const char *key, const char *val
 	else if (!valcmp)
 		return 1;
 	return strcmp(val_str, valcmp);
+}
+
+static int str_dict_has_all(struct hashmap *map, const char **keys, size_t nkeys)
+{
+	const char **key_end = keys + nkeys;
+	for (;keys != key_end; keys++) {
+		if (NULL == str_dict_get_kw(map, *keys))
+			return 0;
+	}
+	return nkeys > 0 ? 1:0;;
+}
+
+static int str_dict_has(struct hashmap *map, const char *key)
+{
+	return str_dict_has_all(map, &key, 1);
 }
 
 static void _strbuf_ch_translate(struct strbuf *dst, struct strbuf *src, char inc, char outc)
@@ -320,6 +380,7 @@ static void _strbuf_insert_str(struct strbuf *dst, const char *str)
 {
 	strbuf_insert(dst, 0, str, strlen(str));
 }
+
 
 static void p4_start_command(struct child_process *cmd)
 {
@@ -489,6 +550,23 @@ static void p4_normalize_type(const char *legacy_type, struct strbuf *base_type,
 	else {
 		die("p4 type not recognized: %s", legacy_type);
 	}
+}
+
+static unsigned p4type2mode(const char *type)
+{
+	struct strbuf base = STRBUF_INIT;
+	struct strbuf mods = STRBUF_INIT;
+	unsigned mode = 0;
+	p4_normalize_type(type, &base, &mods);
+	if (0 == strcmp(base.buf, "symlink"))
+		mode = 0120000;
+	else if (NULL != strchr(mods.buf, 'x'))
+		mode = 0100755;
+	else
+		mode = 0100644;
+	strbuf_release(&mods);
+	strbuf_release(&base);
+	return mode;
 }
 
 static void add_p4_modes(struct strbuf *p4mod, const char *addmods)
@@ -914,19 +992,19 @@ static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict
 {
 	struct hashmap map;
 	struct hashmap_iter hm_iter;
-	keyval_t *kw;
+	struct hashmap_entry *entry;
 	str_dict_init(&map);
 	p4_branches_in_git(&map,local);
 	hashmap_iter_init(&map, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
+	while ((entry = hashmap_iter_next(&hm_iter))) {
 		struct strbuf sb = STRBUF_INIT;
 		struct hashmap settings_map;
 		const char *depot_path = NULL;
+		const keyval_t *kw = container_of(entry, const keyval_t, ent);
 		str_dict_init(&settings_map);
-		extract_log_message(kw->val.buf,&sb);
+		extract_log_message(kw->val.buf, &sb);
 		LOG_GITP4_DEBUG("git log message:\n%s\n", sb.buf);
 		extract_p4_settings_git_log(&settings_map, sb.buf);
-		if (IS_LOG_DEBUG_ALLOWED)
 			str_dict_print(p4_verbose_debug.fp, &settings_map);
 		depot_path = str_dict_get_value(&settings_map,"depot-paths");
 		if (depot_path)
@@ -1173,14 +1251,6 @@ void p4debug_cmd_init(struct command_t *pcmd)
 }
 
 
-typedef struct p4_user_map_t {
-	struct strbuf my_p4_user_id;
-	struct hashmap users;
-	struct hashmap emails;
-	int user_map_from_perfroce_server;
-} p4_user_map_t;
-
-
 
 static void p4usermap_get_id_cb(struct hashmap *map, void *argout)
 {
@@ -1288,7 +1358,6 @@ struct p4submit_data_t {
 	struct strbuf depot_path;
 	struct strbuf client_path;
 	struct strbuf diff_opts;
-	struct p4_user_map_t p4_user_map;
 	int detect_renames;
 	int detect_copies;
 	int detect_copies_harder;
@@ -1338,7 +1407,6 @@ static int p4submit_cmd_parse_conflict_mode(const struct option *opt,
 
 static void p4submit_cmd_deinit(struct command_t *pcmd)
 {
-	p4usermap_deinit(&p4submit_options.p4_user_map);
 	strbuf_release(&p4submit_options.base_commit);
 	strbuf_release(&p4submit_options.branch);
 	strbuf_release(&p4submit_options.depot_path);
@@ -1558,11 +1626,12 @@ static int is_git_mode_exec_changed(const char *src_mode, const char *dst_mode)
 static void str_dict_remove_non_depot_files(struct hashmap *map, const char *depot_path)
 {
 	struct hashmap_iter hm_iter;
-	const keyval_t *kw;
+	struct hashmap_entry *entry;
 	struct hashmap maptmp;
 	str_dict_init(&maptmp);
 	hashmap_iter_init(map, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
+	while ((entry = hashmap_iter_next(&hm_iter))) {
+		const keyval_t *kw = container_of(entry, const keyval_t, ent);
 		if (starts_with(kw->key.buf, "File") && !starts_with(kw->val.buf, depot_path)) {
 			continue;
 		}
@@ -1575,10 +1644,11 @@ static void str_dict_remove_non_depot_files(struct hashmap *map, const char *dep
 static void strbuf_add_p4change_multiple_fields(struct strbuf *out, struct hashmap *map, const char *prefix_field, const char *output_field_name)
 {
 	struct hashmap_iter hm_iter;
-	const keyval_t *kw;
+	struct hashmap_entry *entry;
 	hashmap_iter_init(map, &hm_iter);
 	strbuf_addf(out, "\n%s:\n", output_field_name);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
+	while ((entry = hashmap_iter_next(&hm_iter))) {
+		const keyval_t *kw = container_of(entry, const keyval_t, ent);
 		if (!starts_with(kw->key.buf, prefix_field))
 			continue;
 		strbuf_addf(out, "\t%s\n", kw->val.buf);
@@ -1701,7 +1771,6 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	struct strbuf src_path = STRBUF_INIT;
 	struct strbuf dst_path = STRBUF_INIT;
 	const char *src_mode, *dst_mode;
-	const char *src_sha1, *dst_sha1;
 	const char *cli_path = p4submit_options.client_path.buf;
 	str_dict_init(&map);
 	parse_diff_tree_entry(&map, l->buf);
@@ -1717,8 +1786,6 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	val = str_dict_get_value(&map, "dst");
 	if (val)
 		strbuf_addstr(&dst_path, val);
-	src_sha1 = str_dict_get_value(&map, "src_sha1");
-	dst_sha1 = str_dict_get_value(&map, "dst_sha1");
 	src_mode = str_dict_get_value(&map, "src_mode");
 	dst_mode = str_dict_get_value(&map, "dst_mode");
 	if (IS_LOG_DEBUG_ALLOWED) {
@@ -1764,11 +1831,11 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 		unlink(dst_path->buf);
 		string_list_insert(&files_to_update->added, dst_path->buf);
 #else
-#warning "To be implemented"
+		LOG_GITP4_CRITICAL("Copy not implemented\n");
 #endif
 		break;
 	case 'R':
-#warning "To be implemented"
+		LOG_GITP4_CRITICAL("Rename not implemented\n");
 		break;
 	case 'T':
 		string_list_insert(&files_to_update->type_changed, src_path.buf);
@@ -1806,7 +1873,7 @@ int p4submit_apply(const char *commit_id)
 	struct hashmap_iter hm_iter;
 	struct child_process p4_submit = CHILD_PROCESS_INIT;
 	int clean_opened_files = 1;
-	keyval_t *kw;
+	struct hashmap_entry *entry;
 	p4_files_modified_init(&files_to_update);
 	argv_array_push(&gitargs, "diff-tree");
 	argv_array_push(&gitargs, "-r");
@@ -1821,7 +1888,6 @@ int p4submit_apply(const char *commit_id)
 	git_cmd_read_pipe_line(gitargs.argv, p4submit_apply_cb, &files_to_update);
 	argv_array_clear(&gitargs);
 	if (git_apply_commit(commit_id,p4submit_options.client_path.buf, 0)) {
-#warning "To be implemented"
 		LOG_GITP4_CRITICAL("Error applying commit %s\n", commit_id);
 		goto leave;
 	}
@@ -1838,7 +1904,8 @@ int p4submit_apply(const char *commit_id)
 		p4_delete(cli_path, item->string);
 	}
 	hashmap_iter_init(&files_to_update.exec_bit_changed, &hm_iter);
-	while ((kw = hashmap_iter_next(&hm_iter))) {
+	while ((entry = hashmap_iter_next(&hm_iter))) {
+		const keyval_t *kw = container_of(entry, const keyval_t, ent);
 		p4_set_exec_git(cli_path, kw->key.buf, kw->val.buf);
 	}
 	argv_array_push(&gitargs, "p4");
@@ -2022,10 +2089,39 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	strbuf_release(&commits);
 }
 
-
-static const char *p4usermap_get_user_by_email(struct p4_user_map_t *p4_user_map, const char *email)
+static struct p4_user_map_t *p4usermap_get_cache()
 {
-	return str_dict_get_value(&p4submit_options.p4_user_map.emails,email);
+	if (p4usermap_cached)
+		return p4usermap_cached;
+	p4usermap_cached = malloc(sizeof(struct p4_user_map_t));
+	if (!p4usermap_cached)
+		die("Out of memory");
+	p4usermap_init(p4usermap_cached);
+	return p4usermap_cached;
+}
+
+static void p4usermap_cache_destroy()
+{
+	if (!p4usermap_cached)
+		return;
+	p4usermap_deinit(p4usermap_cached);
+	p4usermap_cached = NULL;
+}
+
+static const char *p4usermap_cache_get_user_by_email(const char *email)
+{
+	struct p4_user_map_t *p4users = p4usermap_get_cache();
+	return str_dict_get_value(&p4users->emails, email);
+}
+
+static const char *p4usermap_cache_get_name_email_str_by_user(const char *user)
+{
+	struct p4_user_map_t *p4users = p4usermap_get_cache();
+	const char *email = str_dict_get_value(&p4users->users, user);
+	if (email)
+		return email;
+	str_dict_set_key_valf(&p4users->users, user, "%s <>", user);
+	return str_dict_get_value(&p4users->users, user);
 }
 
 static void p4submit_user_for_commit(const char *commit, struct strbuf *user, struct strbuf *email)
@@ -2035,7 +2131,7 @@ static void p4submit_user_for_commit(const char *commit, struct strbuf *user, st
 	git_cmd_read_pipe_full(git_cmd_list, email);
 	strbuf_trim(email);
 	strbuf_reset(user);
-	_usr = p4usermap_get_user_by_email(&p4submit_options.p4_user_map, email->buf);
+	_usr = p4usermap_cache_get_user_by_email(email->buf);
 	if (_usr)
 		strbuf_addstr(user,_usr);
 }
@@ -2090,56 +2186,122 @@ struct dump_file_state
 	struct strbuf dirname;
 };
 
-static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4filedesc)
+static int sha1_hash_map(struct hashmap *map, unsigned char *sha1)
+{
+	git_SHA_CTX ctx;
+	git_SHA1_Init(&ctx);
+	if (!hashmap_get_size(map))
+		return -1;
+	struct hashmap_iter hm_iter;
+	struct hashmap_entry *entry;
+	hashmap_iter_init(map, &hm_iter);
+	entry = hashmap_iter_next(&hm_iter);
+	assert(NULL != entry);
+	for (; entry; entry = hashmap_iter_next(&hm_iter)) {
+		const keyval_t *kw = container_of(entry, const keyval_t, ent);
+		git_SHA1_Update(&ctx, kw->key.buf, kw->key.len);
+		git_SHA1_Update(&ctx, kw->val.buf, kw->val.len);
+	}
+	git_SHA1_Final(sha1, &ctx);
+	return 0;
+}
+
+static int mkstemp_unnamed()
+{
+	const char *tmpdir = NULL;
+	int fd = -1;
+	tmpdir = getenv("TMPDIR");
+	if (!tmpdir)
+		tmpdir = "/tmp";
+	struct strbuf tmpname = STRBUF_INIT;
+	strbuf_addf(&tmpname, "%s/gitp4_tmpfile_XXXXXX", tmpdir);
+	fd = mkstemp(tmpname.buf);
+	if (fd >= 0)
+		unlink(tmpname.buf);
+	strbuf_release(&tmpname);
+	return fd;
+}
+
+static int fast_import_blob_fd(int fd_dst, int fd_src, int mark_id)
+{
+	off_t read_remaining = 0;
+	struct strbuf blob_head = STRBUF_INIT;
+	struct strbuf read_buf = STRBUF_INIT;
+	if (fd_src < 0)
+		die("invalid src fd");
+	if (fd_dst < 0)
+		die("invalid dst fd");
+	read_remaining = lseek(fd_src, 0, SEEK_END);
+	if (read_remaining < 0)
+		die("lseek error");
+	if (lseek(fd_src, 0, SEEK_SET) != 0)
+		die("error resetting init pos of fd");
+	strbuf_addf(&blob_head, "blob\nmark :%d\ndata %jd\n", mark_id, read_remaining);
+	write_str_in_full(fd_dst, blob_head.buf);
+	while (read_remaining) {
+		ssize_t nread = strbuf_read(&read_buf, fd_src, 0);
+		if (nread < 0) {
+			switch(errno) {
+				case EAGAIN:
+				case EINTR:
+					continue;
+				default:
+					die("Error reading from tmp file");
+					break;
+			}
+		}
+		else if (nread == 0)
+			break;
+		if (nread > read_remaining)
+			die("File greater than reported, modified outside?");
+		read_remaining -= nread;
+		write_in_full(fd_dst, read_buf.buf, read_buf.len);
+	}
+	strbuf_release(&blob_head);
+	strbuf_release(&read_buf);
+}
+
+static int fast_import_blob_p4filedesc(struct depot_file_t *p4f_out, int fd_out, const struct depot_file_t *p4f_in, int mark_id)
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
 	int res;
-	int fd = -1;
+	int fd_tmp = -1;
 	iconv_t icd = NULL;
 	str_dict_init(&map);
 	argv_array_push(&child_p4.args, "print");
 	child_p4.out = -1;
-	if (p4filedesc->is_revision)
-		argv_array_pushf(&child_p4.args, "%s#%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+	if (p4f_in->is_revision)
+		argv_array_pushf(&child_p4.args, "%s#%d", p4f_in->depot_path_file.buf, p4f_in->chg_rev);
 	else
-		argv_array_pushf(&child_p4.args, "%s@=%d", p4filedesc->depot_path_file.buf, p4filedesc->chg_rev);
+		argv_array_pushf(&child_p4.args, "%s@=%d", p4f_in->depot_path_file.buf, p4f_in->chg_rev);
 	p4_start_command(&child_p4);
 	while (py_marshal_parse(&map, child_p4.out)) {
 		const keyval_t *kw = NULL;
 		if (IS_LOG_DEBUG_ALLOWED)
 			str_dict_print(p4_verbose_debug.fp, &map);
 		if (!strcmp(str_dict_get_value(&map, "code"), "stat")) {
-			struct strbuf filename = STRBUF_INIT;
-			if (fd >= 0)
-				close(fd);
-			fd = -1;
+			if (fd_tmp >= 0)
+				die("More than one file reported");
 			if (icd)
-				iconv_close(icd);
-			icd = NULL;
-			strbuf_addstr(&filename, str_dict_get_value(&map, "depotFile"));
-			if (starts_with(filename.buf, dstate->prefix_depot.buf)) {
-				strbuf_remove(&filename, 0, dstate->prefix_depot.len);
-				if (!ends_with(dstate->dirname.buf, "/"))
-					strbuf_insert(&filename, 0, "/", 1);
-				strbuf_insert(&filename, 0, dstate->dirname.buf, dstate->dirname.len);
-				safe_create_leading_directories_const(filename.buf);
-				fd = open(filename.buf, O_CREAT | O_TRUNC | O_WRONLY, 0666);
-				if (fd < 0)
-					die("Error creating file %s", filename.buf);
-				if (!strcmp(str_dict_get_value(&map, "type"), "utf16")) {
-					icd = iconv_open("utf16", "utf8");
-				}
-				LOG_GITP4_DEBUG("Dumping %s\n", filename.buf);
+				die("icd not NULL");
+			fd_tmp = mkstemp_unnamed();
+			if (!strcmp(str_dict_get_value(&map, "type"), "utf16"))
+				icd = iconv_open("utf16", "utf8");
+			strbuf_setlen(&p4f_out->depot_path_file, 0);
+			strbuf_addstr(&p4f_out->depot_path_file, str_dict_get_value(&map, "depotFile"));
+			if (str_dict_has(&map, "change")) {
+				p4f_out->is_revision = 0;
+				p4f_out->chg_rev = atoi(str_dict_get_value(&map, "change"));
 			}
-			strbuf_release(&filename);
+			p4f_out->mode = p4type2mode(str_dict_get_value(&map, "type"));
 			continue;
 		}
 		else if (strcmp(str_dict_get_value(&map, "code"), "text") &&
 				strcmp(str_dict_get_value(&map, "code"), "binary")) {
 			continue;
 		}
-		if (fd < 0)
+		if (fd_tmp < 0)
 			continue;
 		kw = str_dict_get_kw(&map, "data");
 		if (!kw) {
@@ -2148,10 +2310,10 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 		if (!kw->val.len)
 			continue;
 		if (icd) {
-			int outsz;
+			size_t outsz;
 			char *buf_utf16;
 			keyval_t *kw_reencoded = keyval_init(NULL);
-			buf_utf16 = reencode_string_iconv(kw->val.buf, kw->val.len, icd, &outsz);
+			buf_utf16 = reencode_string_iconv(kw->val.buf, kw->val.len, icd, 0, &outsz);
 			assert(buf_utf16);
 			strbuf_addbuf(&kw_reencoded->key, &kw->key);
 			strbuf_add(&kw_reencoded->val, buf_utf16, outsz);
@@ -2159,10 +2321,13 @@ static int p4_dump(struct dump_file_state *dstate, const struct depot_file_t *p4
 			str_dict_put_kw(&map, kw_reencoded);
 			kw = str_dict_get_kw(&map, "data");
 		}
-		if (write_in_full(fd, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
+		if (write_in_full(fd_tmp, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
 	}
-	if (fd >= 0)
-		close(fd);
+	if (fd_tmp >= 0) {
+		fast_import_blob_fd(fd_out, fd_tmp, mark_id);
+		close(fd_tmp);
+		fd_tmp = -1;
+	}
 	if (icd)
 		iconv_close(icd);
 	close(child_p4.out);
@@ -2176,14 +2341,17 @@ static void depot_file_init(struct depot_file_t *p)
 	strbuf_init(&p->depot_path_file, 0);
 	p->chg_rev = 0;
 	p->is_revision = 0;
+	p->mode = 0;
+	INIT_LIST_HEAD(&p->lhead);
 }
 
-static void depot_file_set(struct depot_file_t *p, const char *str, unsigned int chg_rev, unsigned int is_revision)
+static void depot_file_set(struct depot_file_t *p, const char *str, unsigned int chg_rev, unsigned int is_revision, unsigned mode)
 {
 	strbuf_reset(&p->depot_path_file);
 	strbuf_addstr(&p->depot_path_file, str);
 	p->chg_rev = chg_rev;
 	p->is_revision = is_revision;
+	p->mode = mode;
 }
 
 static void depot_file_copy(struct depot_file_t *dst, struct depot_file_t *src)
@@ -2192,6 +2360,7 @@ static void depot_file_copy(struct depot_file_t *dst, struct depot_file_t *src)
 	strbuf_addbuf(&dst->depot_path_file, &src->depot_path_file);
 	dst->chg_rev = src->chg_rev;
 	dst->is_revision = src->is_revision;
+	dst->mode = src->mode;
 }
 
 static void depot_file_printf(FILE *fp, struct depot_file_t *p)
@@ -2209,13 +2378,14 @@ static void depot_file_destroy(struct depot_file_t *p)
 	strbuf_release(&p->depot_path_file);
 }
 
-static void list_depot_files_add(struct list_head *list_depot_files, const char *depot_file, unsigned int chg_rev, int is_revision)
+static void list_depot_files_add(struct list_head *list_depot_files, const char *depot_file, unsigned int chg_rev, int is_revision, unsigned mode)
 {
 	struct depot_file_t *df = malloc(sizeof(struct depot_file_t));
 	depot_file_init(df);
 	strbuf_addstr(&df->depot_path_file, depot_file);
 	df->chg_rev = chg_rev;
 	df->is_revision = is_revision;
+	df->mode = mode;
 	list_add_tail(&df->lhead, list_depot_files);
 }
 
@@ -2242,6 +2412,72 @@ static void list_depot_files_printf(FILE *fp, struct list_head *list_depot_files
 	}
 }
 
+static void depot_file_pair_init(struct depot_file_pair_t *dp)
+{
+	depot_file_init(&dp->a);
+	depot_file_init(&dp->b);
+}
+
+static void depot_file_pair_destroy(struct depot_file_pair_t *dp)
+{
+	depot_file_destroy(&dp->a);
+	depot_file_destroy(&dp->b);
+}
+
+static void list_depot_files_pair_add(struct list_head *list_depot_files_pair, struct depot_file_t *a, struct depot_file_t *b)
+{
+	struct depot_file_pair_t *df = malloc(sizeof(struct depot_file_pair_t));
+	depot_file_pair_init(df);
+	depot_file_copy(&df->a, a);
+	depot_file_copy(&df->b, b);
+	list_add_tail(&df->lhead, list_depot_files_pair);
+}
+
+static void list_depot_files_pair_destroy(struct list_head *list_depot_files)
+{
+	struct list_head *pos, *p;
+	list_for_each_safe(pos, p, list_depot_files) {
+		struct depot_file_pair_t *dp;
+		list_del(pos);
+		dp = list_entry(pos, struct depot_file_pair_t, lhead);
+		depot_file_pair_destroy(dp);
+		free(dp);
+	}
+}
+
+static void depot_changelist_desc_reset(struct depot_changelist_desc_t *cl)
+{
+	strbuf_reset(&cl->change);
+	strbuf_reset(&cl->desc);
+	strbuf_reset(&cl->time);
+	strbuf_reset(&cl->committer);
+	strbuf_reset(&cl->depot_base);
+	list_depot_files_destroy(&cl->list_of_depot_files);
+	INIT_LIST_HEAD(&cl->list_of_depot_files);
+}
+
+static void depot_changelist_desc_destroy(struct depot_changelist_desc_t *cl)
+{
+	strbuf_release(&cl->change);
+	strbuf_release(&cl->desc);
+	strbuf_release(&cl->time);
+	strbuf_release(&cl->committer);
+	strbuf_release(&cl->depot_base);
+	list_depot_files_destroy(&cl->list_of_depot_files);
+}
+
+static void depot_changelist_diff_reset(struct depot_changelist_diff_t *cl)
+{
+	depot_changelist_desc_reset(&cl->current);
+	depot_changelist_desc_reset(&cl->prev);
+}
+
+static void depot_changelist_diff_destroy(struct depot_changelist_diff_t *cl)
+{
+	depot_changelist_desc_destroy(&cl->current);
+	depot_changelist_desc_destroy(&cl->prev);
+}
+
 static void argv_array_push_depot_files(struct argv_array *args, struct list_head *list_depot_files)
 {
 	struct list_head *pos;
@@ -2255,63 +2491,6 @@ static void argv_array_push_depot_files(struct argv_array *args, struct list_hea
 	}
 }
 
-
-static void depot_file_pair_init(struct depot_file_pair_t *dp)
-{
-	depot_file_init(&dp->a);
-	depot_file_init(&dp->b);
-}
-
-static void depot_file_pair_dump(const char *depot_prefix, const char *dst_dir, struct depot_file_pair_t *dp)
-{
-	struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT};
-	strbuf_addstr(&d_state.prefix_depot, depot_prefix);
-	strbuf_addf(&d_state.dirname, "%s/a", dst_dir);
-	p4_dump(&d_state, &dp->a);
-	strbuf_reset(&d_state.dirname);
-	strbuf_addf(&d_state.dirname, "%s/b", dst_dir);
-	p4_dump(&d_state, &dp->b);
-	strbuf_release(&d_state.dirname);
-	strbuf_release(&d_state.prefix_depot);
-}
-
-static void	depot_file_pair_destroy(struct depot_file_pair_t *dp)
-{
-	depot_file_destroy(&dp->a);
-	depot_file_destroy(&dp->b);
-}
-
-static void list_depot_files_pair_dump(const char *depot_prefix, const char *dest_dir, struct list_head *list_depot_files_pair)
-{
-	struct list_head *pos;
-	list_for_each(pos, list_depot_files_pair) {
-		struct depot_file_pair_t *dp;
-		dp = list_entry(pos, struct depot_file_pair_t, lhead);
-		depot_file_pair_dump(depot_prefix, dest_dir, dp);
-	}
-}
-
-static void list_depot_files_pair_add(struct list_head *list_depot_files_pair, struct depot_file_t *a, struct depot_file_t *b)
-{
-	struct depot_file_pair_t *df = malloc(sizeof(struct depot_file_pair_t));
-	depot_file_pair_init(df);
-	depot_file_copy(&df->a, a);
-	depot_file_copy(&df->b, b);
-	list_add_tail(&df->lhead, list_depot_files_pair);
-}
-
-
-static void list_depot_files_pair_destroy(struct list_head *list_depot_files)
-{
-	struct list_head *pos, *p;
-	list_for_each_safe(pos, p, list_depot_files) {
-		struct depot_file_pair_t *dp;
-		list_del(pos);
-		dp = list_entry(pos, struct depot_file_pair_t, lhead);
-		depot_file_pair_destroy(dp);
-		free(dp);
-	}
-}
 
 struct depot_change_range_t {
 	struct strbuf depot_path;
@@ -2384,12 +2563,13 @@ static int p4revtoi(const char *p4rev)
 	return n;
 }
 
-static void add_list_files_from_changelist(struct list_head *dpfiles, struct depot_change_range_t *chrng)
+static void add_list_files_from_changelist(struct depot_changelist_diff_t *cldiff, struct depot_change_range_t *chrng)
 {
 	const char *depotfile_str = "depotFile";
 	const int depotfile_len = strlen(depotfile_str);
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
+	depot_changelist_diff_reset(cldiff);
 	str_dict_init(&map);
 	argv_array_push(&child_p4.args, "describe");
 	argv_array_push(&child_p4.args, "-S");
@@ -2399,9 +2579,10 @@ static void add_list_files_from_changelist(struct list_head *dpfiles, struct dep
 	while (py_marshal_parse(&map, child_p4.out))
 	{
 		struct hashmap_iter hm_iter;
-		const keyval_t *kw;
+		const struct hashmap_entry *entry;
 		unsigned int changelist;
 		int is_shelved;
+		const char *p4user;
 		assert(str_dict_strcmp(&map, "code", NULL));
 		if (!str_dict_strcmp(&map, "code", "error"))
 			die("Error geting description for change %d", chrng->start_changelist);
@@ -2410,38 +2591,59 @@ static void add_list_files_from_changelist(struct list_head *dpfiles, struct dep
 		changelist = atoi(str_dict_get_value(&map, "change"));
 		is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
 		hashmap_iter_init(&map, &hm_iter);
-		while ((kw = hashmap_iter_next(&hm_iter))) {
+		strbuf_addbuf(&cldiff->current.desc, &str_dict_get_kw(&map, "desc")->val);
+		strbuf_addf(&cldiff->current.desc,
+			"\n[git-p4-cherry-pick: %s...@=%d]", chrng->depot_path.buf, chrng->start_changelist);
+		strbuf_addbuf(&cldiff->prev.desc, &str_dict_get_kw(&map, "desc")->val);
+		strbuf_addf(&cldiff->prev.desc,
+			"\n[git-p4-cherry-pick: %s...@=%d~]", chrng->depot_path.buf, chrng->start_changelist);
+		strbuf_addbuf(&cldiff->current.change, &str_dict_get_kw(&map, "change")->val);
+		strbuf_addbuf(&cldiff->prev.change, &str_dict_get_kw(&map, "change")->val);
+		p4user = p4usermap_cache_get_name_email_str_by_user(str_dict_get_kw(&map, "user")->val.buf);
+		if (p4user) {
+			strbuf_addstr(&cldiff->current.committer, p4user);
+			strbuf_addstr(&cldiff->prev.committer, p4user);
+		}
+		else {
+			strbuf_addf(&cldiff->current.committer, "%s <>", str_dict_get_kw(&map, "user")->val.buf);
+			strbuf_addf(&cldiff->prev.committer, "%s <>", str_dict_get_kw(&map, "user")->val.buf);
+		}
+		strbuf_addbuf(&cldiff->current.time, &str_dict_get_kw(&map, "time")->val);
+		strbuf_addbuf(&cldiff->prev.time, &str_dict_get_kw(&map, "time")->val);
+		while ((entry = hashmap_iter_next(&hm_iter))) {
+			const keyval_t *kw = container_of(entry, const keyval_t, ent);
 			if (starts_with(kw->key.buf, depotfile_str)) {
 				const char *dp_suffix = kw->key.buf + depotfile_len;
 				unsigned int rev = 0;
-				struct depot_file_t a;
-				struct depot_file_t b;
 				const char *action = str_dict_get_valuef(&map, "action%s", dp_suffix);
-				depot_file_init(&a);
-				depot_file_init(&b);
+				unsigned mode;
 				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
+				mode = p4type2mode(str_dict_get_valuef(&map, "type%s", dp_suffix));
 				if (is_shelved) {
-					depot_file_set(&b, kw->val.buf, changelist, 0);
+					if (strcmp(action, "delete"))
+						list_depot_files_add(&cldiff->current.list_of_depot_files, kw->val.buf, changelist, 0, mode);
+					else
+						list_depot_files_add(&cldiff->current.list_of_depot_files, kw->val.buf, 0, 1, mode);
 				}
 				else {
-					depot_file_set(&b, kw->val.buf, rev, 1);
+					if (strcmp(action, "delete"))
+						list_depot_files_add(&cldiff->current.list_of_depot_files, kw->val.buf, rev, 1, mode);
+					else
+						list_depot_files_add(&cldiff->current.list_of_depot_files, kw->val.buf, 0, 1, mode);
 					if (rev)
 						rev --; //Previous revision
 				}
-				if (!strcmp(action,"edit")) {
-					depot_file_set(&a, kw->val.buf, rev, 1);
-				}
-				else if (!strcmp(action, "delete")) {
-					SWAP(a,b);
-				}
-				else if (strcmp(action, "add") &&
+				if (strcmp(action, "add") &&
 						strcmp(action, "branch") &&
-						strcmp(action, "integrate")) {
+						strcmp(action, "integrate") &&
+						strcmp(action, "delete") &&
+						strcmp(action, "edit")) {
 					die("Action %s not supported", action);
 				}
-				list_depot_files_pair_add(dpfiles, &a, &b);
-				depot_file_destroy(&a);
-				depot_file_destroy(&b);
+				else if (strcmp(action, "add")) {
+					list_depot_files_add(&cldiff->prev.list_of_depot_files,
+							kw->val.buf, rev, 1, mode);
+				}
 			}
 		}
 	}
@@ -2450,29 +2652,117 @@ static void add_list_files_from_changelist(struct list_head *dpfiles, struct dep
 	finish_command(&child_p4);
 }
 
-static int p4format_patch_diff(const char *dir, const char *left, const char *right, const char *patch_name)
+static void strbuf_fast_import_commit_header(struct strbuf *sbout, struct depot_changelist_desc_t *pcl, const char *ref, int mark_id)
 {
-	struct child_process child_git = CHILD_PROCESS_INIT;
-	int fd;
-	int ret;
-	fd = open(patch_name, O_CREAT | O_WRONLY, 0666);
-	if (fd < 0)
-		die("Error creating the file %s (%d)", patch_name, errno);
-	child_git.git_cmd = 1;
-	child_git.out = fd;
-	child_git.dir = dir;
-	argv_array_push(&child_git.args, "diff");
-	argv_array_push(&child_git.args, "--no-index");
-	argv_array_push(&child_git.args, "--no-prefix");
-	argv_array_push(&child_git.args, "--patch-with-stat");
-	argv_array_push(&child_git.args, left);
-	argv_array_push(&child_git.args, right);
-	if (start_command(&child_git))
-		die("cannot start git diff");
-	ret = finish_command(&child_git);
-	close(fd);
-	return ret;
+	struct strbuf sb_delim = STRBUF_INIT;
+	strbuf_addf(&sb_delim, "__COMMIT_DELIM_%s_%s_%d",
+			pcl->change.buf,
+			pcl->time.buf,
+			mark_id
+			);
+	strbuf_addf(sbout, "commit %s\n", ref);
+	strbuf_addf(sbout, "mark :%d\n", mark_id);
+	strbuf_addf(sbout, "committer %s %s +0000\n",
+			pcl->committer.buf,
+			pcl->time.buf);
+	strbuf_addf(sbout, "data <<%s\n", sb_delim.buf);
+	strbuf_addbuf(sbout, &pcl->desc);
+	strbuf_addf(sbout, "\n%s\n", sb_delim.buf);
+	strbuf_release(&sb_delim);
 }
+
+static int p4export_change(int fd_out, struct depot_change_range_t *chg_range)
+{
+	struct strbuf fast_prev_commit_sbuf = STRBUF_INIT;
+	struct strbuf fast_commit_sbuf = STRBUF_INIT;
+	struct depot_changelist_diff_t cldiff;
+	struct list_head *pos;
+	char tmp_ref[] = "refs/temp/p4/XXXXXX";
+	int mark_id = 1;
+	INIT_DEPOT_CHANGELIST_DIFF(&cldiff);
+	add_list_files_from_changelist(&cldiff, chg_range);
+	strbuf_fast_import_commit_header(&fast_prev_commit_sbuf, &cldiff.prev, tmp_ref, mark_id);
+	mark_id++;
+	strbuf_fast_import_commit_header(&fast_commit_sbuf, &cldiff.current, tmp_ref, mark_id);
+	strbuf_addf(&fast_commit_sbuf, "from :%d\n", mark_id - 1);
+	mark_id++;
+	list_for_each(pos, &cldiff.current.list_of_depot_files) {
+		const struct strbuf *dp_sb = &chg_range->depot_path;
+		struct depot_file_t *df;
+		df = list_entry(pos, struct depot_file_t, lhead);
+		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
+			continue;
+		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
+		if (df->is_revision && !df->chg_rev)
+			strbuf_addf(&fast_commit_sbuf, "D %s\n", dp_suffix);
+		else {
+			struct depot_file_t df_out;
+			depot_file_init(&df_out);
+			fast_import_blob_p4filedesc(&df_out, fd_out, df, mark_id);
+			strbuf_addf(&fast_commit_sbuf, "M %06o :%d %s\n",
+					df_out.mode,
+					mark_id,
+					dp_suffix);
+			depot_file_destroy(&df_out);
+		}
+		mark_id++;
+	}
+	list_for_each(pos, &cldiff.prev.list_of_depot_files) {
+		const struct strbuf *dp_sb = &chg_range->depot_path;
+		struct depot_file_t *df;
+		df = list_entry(pos, struct depot_file_t, lhead);
+		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
+			continue;
+		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
+		if (df->is_revision && !df->chg_rev)
+			strbuf_addf(&fast_prev_commit_sbuf, "D %s\n", dp_suffix);
+		else {
+			struct depot_file_t df_out;
+			depot_file_init(&df_out);
+			fast_import_blob_p4filedesc(&df_out, fd_out, df, mark_id);
+			strbuf_addf(&fast_prev_commit_sbuf, "M %06o :%d %s\n",
+					df_out.mode,
+					mark_id,
+					dp_suffix);
+			depot_file_destroy(&df_out);
+		}
+		mark_id++;
+	}
+	write_str_in_full(fd_out, fast_prev_commit_sbuf.buf);
+	write_str_in_full(fd_out, fast_commit_sbuf.buf);
+	write_str_in_full(fd_out, "\nreset ");
+	write_str_in_full(fd_out, tmp_ref);
+	write_str_in_full(fd_out, "\n");
+	write_str_in_full(fd_out, "get-mark :2\n");
+	write_str_in_full(fd_out, "done\n");
+	strbuf_release(&fast_prev_commit_sbuf);
+	strbuf_release(&fast_commit_sbuf);
+	depot_changelist_diff_destroy(&cldiff);
+}
+
+static int p4export_change_commit(struct strbuf *p_sb_sha1, struct depot_change_range_t *p_chg_rng)
+{
+	struct child_process git_fast_import = CHILD_PROCESS_INIT;
+	int fail = 0;
+	FILE *fp = NULL;
+	argv_array_push(&git_fast_import.args, "git");
+	argv_array_push(&git_fast_import.args, "fast-import");
+	git_fast_import.in = -1;
+	git_fast_import.out = -1;
+	if (start_command(&git_fast_import)) {
+		die("cannot start git fast-import");
+	}
+	if (NULL == (fp = fdopen(git_fast_import.out, "r")))
+		die("cannot open fast-import out");
+	p4export_change(git_fast_import.in, p_chg_rng);
+	if (EOF == strbuf_getline(p_sb_sha1, fp)) {
+		die("Failed to retrieve commit");
+	}
+	fclose(fp);
+	finish_command(&git_fast_import);
+	return fail;
+}
+
 
 void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 {
@@ -2480,29 +2770,23 @@ void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		OPT_END()
 	};
 	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
-	struct list_head depot_files = LIST_HEAD_INIT(depot_files);
-	struct strbuf tmpdir_name = STRBUF_INIT;
-	struct strbuf patch_name = STRBUF_INIT;
-	const char *tmpdir = getenv("TMPDIR");
-	if (!tmpdir)
-		tmpdir = "/tmp";
+	struct strbuf commit_sha1 = STRBUF_INIT;
+	struct child_process git_format_patch = CHILD_PROCESS_INIT;
 	argc = parse_options(argc, argv, NULL, options, NULL, 0);
 	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
 		die("Error parsing changelists");
 	}
-	print_change_range(stderr, &chg_range);
-	add_list_files_from_changelist(&depot_files, &chg_range);
-	strbuf_addf(&tmpdir_name, "%s/diff_XXXXXX", tmpdir);
-	if (!mkdtemp(tmpdir_name.buf))
-		die("Error createing temp directory");
-	list_depot_files_pair_dump(chg_range.depot_path.buf, tmpdir_name.buf, &depot_files);
-	strbuf_addf(&patch_name, "CL%d.patch", chg_range.start_changelist);
-	p4format_patch_diff(tmpdir_name.buf, "a", "b", patch_name.buf);
-	list_depot_files_pair_destroy(&depot_files);
+	if (IS_LOG_DEBUG_ALLOWED)
+		print_change_range(p4_verbose_debug.fp, &chg_range);
+	if (p4export_change_commit(&commit_sha1, &chg_range))
+		die("p4 export failed");
+	argv_array_push(&git_format_patch.args, "git");
+	argv_array_push(&git_format_patch.args, "format-patch");
+	argv_array_pushf(&git_format_patch.args, "%s~1..%s", commit_sha1.buf, commit_sha1.buf);
+	if (start_command(&git_format_patch))
+		die("cannot start git format-patch");
+	finish_command(&git_format_patch);
 	depot_change_range_destroy(&chg_range);
-	strbuf_release(&tmpdir_name);
-	strbuf_release(&patch_name);
-
 }
 
 void p4submit_cmd_init(struct command_t *pcmd)
@@ -2520,7 +2804,6 @@ void p4submit_cmd_init(struct command_t *pcmd)
 	strbuf_init(&p4submit_options.client_path, 0);
 	strbuf_init(&p4submit_options.diff_opts, 0);
 	git_config(p4submit_git_config,NULL);
-	p4usermap_init(&p4submit_options.p4_user_map);
 }
 
 void p4shelve_cmd_init(struct command_t *pcmd)
@@ -2668,13 +2951,11 @@ static void p4discover_branches_find_p4_parent(struct depot_file_pair_t *depot_p
 
 static void p4create_new_p4_branch(struct strbuf *lbranch, struct depot_file_pair_t *dp)
 {
-	struct p4_user_map_t p4_user_map;
 	struct strbuf base_sha = STRBUF_INIT;
 	struct strbuf user = STRBUF_INIT;
 	struct strbuf gitp4_line = STRBUF_INIT;
 	struct hashmap m_describe;
 	str_dict_init(&m_describe);
-	p4usermap_init(&p4_user_map);
 	find_p4_depot_commit(&base_sha, &dp->b);
 	if (!base_sha.len) {
 		LOG_GITP4_INFO("No associate commit found\n");
@@ -2701,13 +2982,8 @@ static void p4create_new_p4_branch(struct strbuf *lbranch, struct depot_file_pai
 	LOG_GITP4_DEBUG("desc: %s\n", str_dict_get_value(&m_describe, "desc"));
 	LOG_GITP4_DEBUG("user: %s\n", str_dict_get_value(&m_describe, "user"));
 	LOG_GITP4_DEBUG("time: %s\n", str_dict_get_value(&m_describe, "time"));
-	if (str_dict_get_value(&p4_user_map.users, str_dict_get_value(&m_describe, "user")))
-		strbuf_addstr(&user,
-				str_dict_get_value(&p4_user_map.users, str_dict_get_value(&m_describe, "user")));
-	else
-		strbuf_addf(&user, "%s <>", str_dict_get_value(&m_describe, "user"));
-	LOG_GITP4_DEBUG("user full address %s\n",
-			str_dict_get_value(&p4_user_map.users, str_dict_get_value(&m_describe, "user")));
+	strbuf_addstr(&user, p4usermap_cache_get_name_email_str_by_user(str_dict_get_value(&m_describe, "user")));
+	LOG_GITP4_DEBUG("user full address %s\n", user.buf);
 	str_dict_set_key_val(&m_describe, "branch", lbranch->buf);
 	strbuf_add_gitp4(&gitp4_line, &dp->a);
 	str_dict_set_key_valf(&m_describe, "msg", "%s\n%s\n",
@@ -2720,7 +2996,6 @@ _leave:
 	strbuf_release(&gitp4_line);
 	strbuf_release(&user);
 	strbuf_release(&base_sha);
-	p4usermap_deinit(&p4_user_map);
 }
 
 static void p4discover_branches_find_branches(struct list_head *new_branches, const char *str_pattern, const char *local_branch_pattern)
@@ -2779,10 +3054,10 @@ static void p4discover_branches_find_branches(struct list_head *new_branches, co
 			assert(str_dict_get_value(&map, "change0"));
 			depot_file_set(&branch_depot_path,
 					str_dict_get_value(&map, "depotFile"),
-					atoi(str_dict_get_value(&map, "change0")), 0);
+					atoi(str_dict_get_value(&map, "change0")), 0, 040000);
 			depot_file_set(&branch_base_depot_path,
 					branch_from,
-					0, 0);
+					0, 0, 040000);
 			strbuf_strip_suffix(&branch_depot_path.depot_path_file, sub_file_name.buf);
 			strbuf_strip_suffix(&branch_base_depot_path.depot_path_file, sub_file_name.buf);
 			LOG_GITP4_DEBUG("After stripping: %s (%s)\n",
@@ -2888,6 +3163,44 @@ void p4discover_branches_cmd_init(struct command_t *pcmd)
 	pcmd->data = 0;
 }
 
+
+static void p4cherry_pick_cmd_run(command_t *pcmd, int argc, const char **argv)
+{
+	struct option options[] = {
+		OPT_END()
+	};
+	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
+	struct strbuf commit_sha1 = STRBUF_INIT;
+	struct child_process git_format_patch = CHILD_PROCESS_INIT;
+	argc = parse_options(argc, argv, NULL, options, NULL, 0);
+	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
+		die("Error parsing changelists");
+	}
+	if (IS_LOG_DEBUG_ALLOWED)
+		print_change_range(p4_verbose_debug.fp, &chg_range);
+	if (p4export_change_commit(&commit_sha1, &chg_range))
+		die("p4 export failed");
+	argv_array_push(&git_format_patch.args, "git");
+	argv_array_push(&git_format_patch.args, "cherry-pick");
+	argv_array_pushf(&git_format_patch.args, "%s", commit_sha1.buf);
+	if (start_command(&git_format_patch))
+		die("cannot start git format-patch");
+	finish_command(&git_format_patch);
+	depot_change_range_destroy(&chg_range);
+}
+
+void p4cherry_pick_cmd_init(struct command_t *pcmd)
+{
+	strbuf_init(&pcmd->strb_usage, 256);
+	strbuf_addf(&pcmd->strb_usage, "cherry pick a p4 CL");
+	strbuf_addf(&pcmd->strb_usage, "Usage: git-p4 cherry-pick [base p4 path] [CL]");
+	pcmd->needs_git = 0;
+	pcmd->verbose = 0;
+	pcmd->run_fn = p4cherry_pick_cmd_run;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->data = NULL;
+}
+
 static int git_rm(const char *filename)
 {
 	struct child_process child_git = CHILD_PROCESS_INIT;
@@ -2910,6 +3223,7 @@ static int git_add(const char *filename)
 	return finish_command(&child_git);
 }
 
+#if 0
 static void list_depot_files_pair_to_worktree(const char *depot_prefix, const char *dest_dir, struct list_head *list_depot_files_pair)
 {
 	struct list_head *pos;
@@ -2942,7 +3256,7 @@ static void list_depot_files_pair_to_worktree(const char *depot_prefix, const ch
 		strbuf_release(&d_state.prefix_depot);
 	}
 }
-
+#endif
 
 void p4format_patch_cmd_init(struct command_t *pcmd)
 {
@@ -2950,36 +3264,6 @@ void p4format_patch_cmd_init(struct command_t *pcmd)
 	pcmd->needs_git = 0;
 	pcmd->verbose = 0;
 	pcmd->run_fn = p4format_patch_cmd_run;
-	pcmd->deinit_fn = p4_cmd_default_deinit;
-	pcmd->data = NULL;
-}
-
-void p4unshelve_cmd_run(struct command_t *cmd, int argc, const char **argv)
-{
-	struct option options[] = {
-		OPT_END()
-	};
-	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
-	struct list_head depot_files = LIST_HEAD_INIT(depot_files);
-	const char *worktree_dir = get_git_work_tree();
-	if (!worktree_dir)
-		die("Not in working tree\n");
-	argc = parse_options(argc, argv, NULL, options, NULL, 0);
-	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
-		die("Error parsing changelists");
-	}
-	add_list_files_from_changelist(&depot_files, &chg_range);
-	list_depot_files_pair_to_worktree(chg_range.depot_path.buf, worktree_dir, &depot_files);
-	list_depot_files_pair_destroy(&depot_files);
-	depot_change_range_destroy(&chg_range);
-}
-
-void p4unshelve_cmd_init(struct command_t *pcmd)
-{
-	strbuf_init(&pcmd->strb_usage,0);
-	pcmd->needs_git = 0;
-	pcmd->verbose = 0;
-	pcmd->run_fn = p4unshelve_cmd_run;
 	pcmd->deinit_fn = p4_cmd_default_deinit;
 	pcmd->data = NULL;
 }
@@ -3064,7 +3348,7 @@ void keyval_print(FILE *fp, keyval_t *kw)
 	fprintf(fp, "'");
 }
 
-void keyval_copy(keyval_t *dst, keyval_t *src)
+void keyval_copy(keyval_t *dst, const keyval_t *src)
 {
 	strbuf_reset(&dst->key);
 	strbuf_reset(&dst->val);
@@ -3183,8 +3467,8 @@ const command_list_t cmd_lst[] =
 	{"submit", p4submit_cmd_init},
 	{"shelve", p4shelve_cmd_init},
 	{"format-patch", p4format_patch_cmd_init},
-	{"unshelve", p4unshelve_cmd_init},
 	{"discover-branches", p4discover_branches_cmd_init},
+	{"cherry-pick", p4cherry_pick_cmd_init},
 };
 
 void print_usage(FILE *fp, const char *progname)
@@ -3250,6 +3534,7 @@ int cmd_main(int argc, const char **argv)
 	}
 	cmd.run_fn(&cmd, argc, argv);
 	p4_cmd_destroy(&cmd);
+	p4usermap_cache_destroy();
 	return 0;
 }
 
