@@ -2575,6 +2575,8 @@ static void add_list_files_from_changelist(struct depot_changelist_diff_t *cldif
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
 	depot_changelist_diff_reset(cldiff);
+	strbuf_addbuf(&cldiff->current.depot_base, &chrng->depot_path);
+	strbuf_addbuf(&cldiff->prev.depot_base, &chrng->depot_path);
 	str_dict_init(&map);
 	argv_array_push(&child_p4.args, "describe");
 	argv_array_push(&child_p4.args, "-S");
@@ -2676,12 +2678,43 @@ static void strbuf_fast_import_commit_header(struct strbuf *sbout, struct depot_
 	strbuf_release(&sb_delim);
 }
 
-static int p4export_change(int fd_out, struct depot_change_range_t *chg_range)
+
+static int p4export_apply_file_changes(struct strbuf *p_commit_files, int fd_out, struct depot_changelist_desc_t *pchange, int mark_id)
+{
+	const struct strbuf *dp_sb = &pchange->depot_base;
+	struct list_head *pos;
+	list_for_each(pos, &pchange->list_of_deleted_files) {
+		struct depot_file_t *df;
+		df = list_entry(pos, struct depot_file_t, lhead);
+		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
+			continue;
+		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
+		strbuf_addf(p_commit_files, "D %s\n", dp_suffix);
+	}
+	list_for_each(pos, &pchange->list_of_modified_files) {
+		struct depot_file_t *df;
+		df = list_entry(pos, struct depot_file_t, lhead);
+		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
+			continue;
+		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
+		struct depot_file_t df_out;
+		depot_file_init(&df_out);
+		fast_import_blob_p4filedesc(&df_out, fd_out, df, mark_id);
+		strbuf_addf(p_commit_files, "M %06o :%d %s\n",
+				df_out.mode,
+				mark_id,
+				dp_suffix);
+		depot_file_destroy(&df_out);
+		mark_id++;
+	}
+	return mark_id;
+}
+
+static void p4export_change(int fd_out, struct depot_change_range_t *chg_range)
 {
 	struct strbuf fast_prev_commit_sbuf = STRBUF_INIT;
 	struct strbuf fast_commit_sbuf = STRBUF_INIT;
 	struct depot_changelist_diff_t cldiff;
-	struct list_head *pos;
 	char tmp_ref[] = "refs/temp/p4/XXXXXX";
 	int mark_id = 1;
 	INIT_DEPOT_CHANGELIST_DIFF(&cldiff);
@@ -2691,57 +2724,8 @@ static int p4export_change(int fd_out, struct depot_change_range_t *chg_range)
 	strbuf_fast_import_commit_header(&fast_commit_sbuf, &cldiff.current, tmp_ref, mark_id);
 	strbuf_addf(&fast_commit_sbuf, "from :%d\n", mark_id - 1);
 	mark_id++;
-	list_for_each(pos, &cldiff.current.list_of_deleted_files) {
-		const struct strbuf *dp_sb = &chg_range->depot_path;
-		struct depot_file_t *df;
-		df = list_entry(pos, struct depot_file_t, lhead);
-		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
-			continue;
-		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
-		strbuf_addf(&fast_commit_sbuf, "D %s\n", dp_suffix);
-	}
-	list_for_each(pos, &cldiff.current.list_of_modified_files) {
-		const struct strbuf *dp_sb = &chg_range->depot_path;
-		struct depot_file_t *df;
-		df = list_entry(pos, struct depot_file_t, lhead);
-		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
-			continue;
-		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
-		if (df->is_revision && !df->chg_rev)
-			strbuf_addf(&fast_commit_sbuf, "D %s\n", dp_suffix);
-		else {
-			struct depot_file_t df_out;
-			depot_file_init(&df_out);
-			fast_import_blob_p4filedesc(&df_out, fd_out, df, mark_id);
-			strbuf_addf(&fast_commit_sbuf, "M %06o :%d %s\n",
-					df_out.mode,
-					mark_id,
-					dp_suffix);
-			depot_file_destroy(&df_out);
-		}
-		mark_id++;
-	}
-	list_for_each(pos, &cldiff.prev.list_of_modified_files) {
-		const struct strbuf *dp_sb = &chg_range->depot_path;
-		struct depot_file_t *df;
-		df = list_entry(pos, struct depot_file_t, lhead);
-		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
-			continue;
-		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
-		if (df->is_revision && !df->chg_rev)
-			strbuf_addf(&fast_prev_commit_sbuf, "D %s\n", dp_suffix);
-		else {
-			struct depot_file_t df_out;
-			depot_file_init(&df_out);
-			fast_import_blob_p4filedesc(&df_out, fd_out, df, mark_id);
-			strbuf_addf(&fast_prev_commit_sbuf, "M %06o :%d %s\n",
-					df_out.mode,
-					mark_id,
-					dp_suffix);
-			depot_file_destroy(&df_out);
-		}
-		mark_id++;
-	}
+	mark_id = p4export_apply_file_changes(&fast_prev_commit_sbuf, fd_out, &cldiff.prev, mark_id);
+	mark_id = p4export_apply_file_changes(&fast_commit_sbuf, fd_out, &cldiff.current, mark_id);
 	write_str_in_full(fd_out, fast_prev_commit_sbuf.buf);
 	write_str_in_full(fd_out, fast_commit_sbuf.buf);
 	write_str_in_full(fd_out, "\nreset ");
@@ -3215,6 +3199,34 @@ void p4cherry_pick_cmd_init(struct command_t *pcmd)
 	pcmd->data = NULL;
 }
 
+static void p4fast_export_cmd_run(command_t *pcmd, int argc, const char **argv)
+{
+	struct option options[] = {
+		OPT_END()
+	};
+	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
+	argc = parse_options(argc, argv, NULL, options, NULL, 0);
+	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
+		die("Error parsing changelists");
+	}
+	if (IS_LOG_DEBUG_ALLOWED)
+		print_change_range(p4_verbose_debug.fp, &chg_range);
+	p4export_change(STDOUT_FILENO, &chg_range);
+	depot_change_range_destroy(&chg_range);
+}
+
+void p4fast_export_cmd_init(struct command_t *pcmd)
+{
+	strbuf_init(&pcmd->strb_usage, 256);
+	strbuf_addf(&pcmd->strb_usage, "fast-export a p4 CL");
+	strbuf_addf(&pcmd->strb_usage, "Usage: git-p4 fast-export [base p4 path] [CL]");
+	pcmd->needs_git = 0;
+	pcmd->verbose = 0;
+	pcmd->run_fn = p4fast_export_cmd_run;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->data = NULL;
+}
+
 static int git_rm(const char *filename)
 {
 	struct child_process child_git = CHILD_PROCESS_INIT;
@@ -3483,6 +3495,7 @@ const command_list_t cmd_lst[] =
 	{"format-patch", p4format_patch_cmd_init},
 	{"discover-branches", p4discover_branches_cmd_init},
 	{"cherry-pick", p4cherry_pick_cmd_init},
+	{"fast-export", p4fast_export_cmd_init},
 };
 
 void print_usage(FILE *fp, const char *progname)
