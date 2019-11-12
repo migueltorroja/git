@@ -2607,14 +2607,8 @@ static void add_list_files_from_changelist(struct depot_changelist_diff_t *cldif
 		strbuf_addbuf(&cldiff->current.change, &str_dict_get_kw(&map, "change")->val);
 		strbuf_addbuf(&cldiff->prev.change, &str_dict_get_kw(&map, "change")->val);
 		p4user = p4usermap_cache_get_name_email_str_by_user(str_dict_get_kw(&map, "user")->val.buf);
-		if (p4user) {
-			strbuf_addstr(&cldiff->current.committer, p4user);
-			strbuf_addstr(&cldiff->prev.committer, p4user);
-		}
-		else {
-			strbuf_addf(&cldiff->current.committer, "%s <>", str_dict_get_kw(&map, "user")->val.buf);
-			strbuf_addf(&cldiff->prev.committer, "%s <>", str_dict_get_kw(&map, "user")->val.buf);
-		}
+		strbuf_addstr(&cldiff->current.committer, p4user);
+		strbuf_addstr(&cldiff->prev.committer, p4user);
 		strbuf_addbuf(&cldiff->current.time, &str_dict_get_kw(&map, "time")->val);
 		strbuf_addbuf(&cldiff->prev.time, &str_dict_get_kw(&map, "time")->val);
 		while ((entry = hashmap_iter_next(&hm_iter))) {
