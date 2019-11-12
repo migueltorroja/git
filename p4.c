@@ -1175,7 +1175,7 @@ static int p4_where(const char *depot_path, struct strbuf *client_path)
 	return ret;
 }
 
-static int p4_sync(const char *client_path, struct string_list *local_files, int force_sync)
+static int p4_sync(const char *client_path, struct string_list *local_files, const char *version_suffix, int force_sync)
 {
 	struct argv_array sync_args = ARGV_ARRAY_INIT;
 	int retp4 = -1;
@@ -1183,12 +1183,12 @@ static int p4_sync(const char *client_path, struct string_list *local_files, int
 	if (force_sync)
 		argv_array_push(&sync_args, "-f");
 	if (!local_files) {
-		argv_array_push(&sync_args, "...");
+		argv_array_pushf(&sync_args, "...%s", version_suffix);
 	}
 	else {
 		struct string_list_item *item;
 		for_each_string_list_item(item, local_files) {
-			argv_array_push(&sync_args, item->string);
+			argv_array_pushf(&sync_args, "%s%s", item->string, version_suffix);
 		}
 	}
 	retp4 = p4_cmd_run(sync_args.argv, client_path, NULL, NULL);
@@ -1196,34 +1196,34 @@ static int p4_sync(const char *client_path, struct string_list *local_files, int
 	return retp4;
 }
 
-static int p4_sync_force_dir(const char *client_path)
+static int p4_sync_force_dir(const char *client_path, const char *version_suffix)
 {
-	return p4_sync(client_path, NULL, 1);
+	return p4_sync(client_path, NULL, version_suffix, 1);
 }
 
-static int p4_sync_dir(const char *client_path)
+static int p4_sync_dir(const char *client_path, const char *version_suffix)
 {
-	return p4_sync(client_path, NULL, 0);
+	return p4_sync(client_path, NULL, version_suffix, 0);
 }
 
-static int p4_sync_file_opt(const char *client_path, const char *filename, int force_sync)
+static int p4_sync_file_opt(const char *client_path, const char *filename, const char *version_suffix, int force_sync)
 {
 	struct string_list syncfiles = STRING_LIST_INIT_DUP;
 	int retp4sync = 0;
 	string_list_insert(&syncfiles, filename);
-	retp4sync = p4_sync(client_path, &syncfiles, force_sync);
+	retp4sync = p4_sync(client_path, &syncfiles, version_suffix, force_sync);
 	string_list_clear(&syncfiles, 0);
 	return retp4sync;
 }
 
-static int p4_sync_file(const char *client_path, const char *filename)
+static int p4_sync_file(const char *client_path, const char *filename, const char *version_suffix)
 {
-	return p4_sync_file_opt(client_path, filename, 0);
+	return p4_sync_file_opt(client_path, filename, version_suffix, 0);
 }
 
-static int p4_sync_force_file(const char *client_path, const char *filename)
+static int p4_sync_force_file(const char *client_path, const char *filename, const char *version_suffix)
 {
-	return p4_sync_file_opt(client_path, filename, 1);
+	return p4_sync_file_opt(client_path, filename, version_suffix, 1);
 }
 
 static int dir_exists(const char *path)
@@ -1355,6 +1355,7 @@ struct p4submit_data_t {
 	struct strbuf depot_path;
 	struct strbuf client_path;
 	struct strbuf diff_opts;
+	struct strbuf cl_suffix;
 	int detect_renames;
 	int detect_copies;
 	int detect_copies_harder;
@@ -1409,6 +1410,7 @@ static void p4submit_cmd_deinit(struct command_t *pcmd)
 	strbuf_release(&p4submit_options.depot_path);
 	strbuf_release(&p4submit_options.client_path);
 	strbuf_release(&p4submit_options.diff_opts);
+	strbuf_release(&p4submit_options.cl_suffix);
 	if (p4submit_options.allow_submit)
 		strbuf_list_free(p4submit_options.allow_submit);
 	p4submit_options.allow_submit = NULL;
@@ -1769,6 +1771,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	struct strbuf dst_path = STRBUF_INIT;
 	const char *src_mode, *dst_mode;
 	const char *cli_path = p4submit_options.client_path.buf;
+	const char *cl_suffix = p4submit_options.cl_suffix.buf;
 	str_dict_init(&map);
 	parse_diff_tree_entry(&map, l->buf);
 	val = str_dict_get_value(&map, "status");
@@ -1791,7 +1794,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 	}
 	switch (modifier) {
 	case 'M':
-		p4_sync_force_file(cli_path, src_path.buf);
+		p4_sync_force_file(cli_path, src_path.buf, cl_suffix);
 		p4_edit(cli_path, src_path.buf,0);
 		if (is_git_mode_exec_changed(src_mode, dst_mode))
 			str_dict_set_key_val(&files_to_update->exec_bit_changed, src_path.buf, dst_mode);
@@ -1805,7 +1808,7 @@ static void p4submit_apply_cb(struct strbuf *l, void *arg)
 		string_list_remove(&files_to_update->deleted, src_path.buf, 0);
 		break;
 	case 'D':
-		p4_sync_force_file(cli_path, src_path.buf);
+		p4_sync_force_file(cli_path, src_path.buf, cl_suffix);
 		string_list_insert(&files_to_update->deleted, src_path.buf);
 		string_list_remove(&files_to_update->added, src_path.buf, 0);
 		break;
@@ -1889,7 +1892,7 @@ int p4submit_apply(const char *commit_id)
 		goto leave;
 	}
 	for_each_string_list_item(item,&files_to_update.type_changed) {
-		p4_sync_force_file(cli_path, item->string);
+		p4_sync_force_file(cli_path, item->string, p4submit_options.cl_suffix.buf);
 		p4_edit(cli_path, item->string, 1);
 	}
 	for_each_string_list_item(item,&files_to_update.added) {
@@ -1897,7 +1900,7 @@ int p4submit_apply(const char *commit_id)
 	}
 	for_each_string_list_item(item,&files_to_update.deleted) {
 		p4_revert(cli_path, item->string);
-		p4_sync_force_file(cli_path, item->string);
+		p4_sync_force_file(cli_path, item->string, p4submit_options.cl_suffix.buf);
 		p4_delete(cli_path, item->string);
 	}
 	hashmap_iter_init(&files_to_update.exec_bit_changed, &hm_iter);
@@ -2020,6 +2023,8 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 		if (find_upstream_branch_point(0, &base_commit, &dict_map) == 0) {
 			strbuf_reset(&p4submit_options.depot_path);
 			strbuf_addf(&p4submit_options.depot_path,"%s", str_dict_get_value(&dict_map,"depot-paths"));
+			strbuf_setlen(&p4submit_options.cl_suffix, 0);
+			strbuf_addf(&p4submit_options.cl_suffix, "@%s", str_dict_get_value(&dict_map, "change"));
 			if (p4submit_options.base_commit.len == 0)
 				strbuf_addbuf(&p4submit_options.base_commit, &base_commit);
 			LOG_GITP4_DEBUG("Upstream: %s\n",base_commit.buf);
@@ -2034,7 +2039,9 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 
 	if (p4submit_options.update_shelve_cl)
 		p4submit_options.shelve = 1;
-
+	if (!p4submit_options.shelve) {
+		strbuf_setlen(&p4submit_options.cl_suffix, 0);
+	}
 	if (p4submit_options.preserve_user &&
 			!p4_has_admin_permissions(p4submit_options.depot_path.buf))
 		die("Cannot preserve user names without p4 super-user or admin permissions");
@@ -2809,6 +2816,7 @@ void p4submit_cmd_init(struct command_t *pcmd)
 	strbuf_init(&p4submit_options.depot_path, 0);
 	strbuf_init(&p4submit_options.client_path, 0);
 	strbuf_init(&p4submit_options.diff_opts, 0);
+	strbuf_init(&p4submit_options.cl_suffix, 0);
 	git_config(p4submit_git_config,NULL);
 }
 
