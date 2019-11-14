@@ -823,7 +823,7 @@ static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict
 		extract_log_message(kw->val.buf, &sb);
 		LOG_GITP4_DEBUG("git log message:\n%s\n", sb.buf);
 		extract_p4_settings_git_log(&settings_map, sb.buf);
-			str_dict_print(p4_verbose_debug.fp, &settings_map);
+		str_dict_print(p4_verbose_debug.fp, &settings_map);
 		depot_path = str_dict_get_value(&settings_map,"depot-paths");
 		if (depot_path)
 			str_dict_set_key_valf(branch_by_depot_dict, depot_path, "remotes/p4/%s", kw->key.buf);
