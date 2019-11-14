@@ -2425,20 +2425,22 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 			continue;
 		changelist = atoi(str_dict_get_value(&map, "change"));
 		is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
-		hashmap_iter_init(&map, &hm_iter);
+		p4user = p4usermap_cache_get_name_email_str_by_user(str_dict_get_kw(&map, "user")->val.buf);
 		strbuf_addbuf(&current->desc, &str_dict_get_kw(&map, "desc")->val);
 		strbuf_addf(&current->desc,
 			"\n[git-p4-cherry-pick: %s...@=%d]", depot_path, changelist);
-		strbuf_addbuf(&prev->desc, &str_dict_get_kw(&map, "desc")->val);
-		strbuf_addf(&prev->desc,
-			"\n[git-p4-cherry-pick: %s...@=%d~]", depot_path, changelist);
 		strbuf_addbuf(&current->changelist_or_commit, &str_dict_get_kw(&map, "change")->val);
-		strbuf_addbuf(&prev->changelist_or_commit, &str_dict_get_kw(&map, "change")->val);
-		p4user = p4usermap_cache_get_name_email_str_by_user(str_dict_get_kw(&map, "user")->val.buf);
 		strbuf_addstr(&current->committer, p4user);
-		strbuf_addstr(&prev->committer, p4user);
 		strbuf_addbuf(&current->time, &str_dict_get_kw(&map, "time")->val);
-		strbuf_addbuf(&prev->time, &str_dict_get_kw(&map, "time")->val);
+		if (prev) {
+			strbuf_addbuf(&prev->desc, &str_dict_get_kw(&map, "desc")->val);
+			strbuf_addf(&prev->desc,
+					"\n[git-p4-cherry-pick: %s...@=%d~]", depot_path, changelist);
+			strbuf_addbuf(&prev->changelist_or_commit, &str_dict_get_kw(&map, "change")->val);
+			strbuf_addstr(&prev->committer, p4user);
+			strbuf_addbuf(&prev->time, &str_dict_get_kw(&map, "time")->val);
+		}
+		hashmap_iter_init(&map, &hm_iter);
 		while ((entry = hashmap_iter_next(&hm_iter))) {
 			const keyval_t *kw = container_of(entry, const keyval_t, ent);
 			if (starts_with(kw->key.buf, depotfile_str)) {
@@ -2469,7 +2471,8 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 						strcmp(action, "edit")) {
 					die("Action %s not supported", action);
 				}
-				else if (strcmp(action, "add") &&
+				else if (prev &&
+						strcmp(action, "add") &&
 						strcmp(action, "branch") &&
 						rev != 0) {
 					list_depot_files_add(&prev->list_of_modified_files,
@@ -3012,6 +3015,40 @@ void p4discover_branches_cmd_init(struct command_t *pcmd)
 	pcmd->data = 0;
 }
 
+static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
+{
+	struct option options[] = {
+		OPT_END()
+	};
+	struct hashmap map;
+	struct hashmap_iter hm_iter;
+	struct hashmap_entry *entry;
+	str_dict_init(&map);
+	p4_remote_branches_in_git(&map);
+	if (IS_LOG_DEBUG_ALLOWED) {
+		LOG_GITP4_DEBUG("Remotes:\n");
+		str_dict_print(p4_verbose_debug.fp, &map);
+	}
+	hashmap_iter_init(&map, &hm_iter);
+	while ((entry = hashmap_iter_next(&hm_iter))) {
+		struct hashmap settings_map;
+		struct strbuf sb = STRBUF_INIT;
+		const char *depot_path = NULL;
+		int changelist;
+		const keyval_t *kw = container_of(entry, const keyval_t, ent);
+		str_dict_init(&settings_map);
+		extract_log_message(kw->val.buf, &sb);
+		extract_p4_settings_git_log(&settings_map, sb.buf);
+		depot_path = str_dict_get_value(&settings_map, "depot-paths");
+		changelist = atoi(str_dict_get_value(&settings_map, "change"));
+		if (IS_LOG_DEBUG_ALLOWED) {
+			fprintf(p4_verbose_debug.fp, "%s...@%d\n", depot_path, changelist);
+		}
+		strbuf_release(&sb);
+		str_dict_destroy(&settings_map);
+	}
+	str_dict_destroy(&map);
+}
 
 static void p4cherry_pick_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
@@ -3145,6 +3182,16 @@ void p4format_patch_cmd_init(struct command_t *pcmd)
 	pcmd->data = NULL;
 }
 
+void p4fetch_cmd_init(struct command_t *pcmd)
+{
+	strbuf_init(&pcmd->strb_usage, 0);
+	pcmd->needs_git = 0;
+	pcmd->verbose = 0;
+	pcmd->run_fn = p4fetch_cmd_run;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->data = NULL;
+}
+
 typedef struct command_list_t {
 	const char *gitp4cmd;
 	void (*cmd_init)(struct command_t *pcmd);
@@ -3159,6 +3206,7 @@ const command_list_t cmd_lst[] =
 	{"discover-branches", p4discover_branches_cmd_init},
 	{"cherry-pick", p4cherry_pick_cmd_init},
 	{"fast-export", p4fast_export_cmd_init},
+	{"fetch", p4fetch_cmd_init},
 };
 
 void print_usage(FILE *fp, const char *progname)
