@@ -2472,7 +2472,9 @@ static void add_list_files_from_changelist(struct list_head *list_changes, struc
 						strcmp(action, "edit")) {
 					die("Action %s not supported", action);
 				}
-				else if (strcmp(action, "add")) {
+				else if (strcmp(action, "add") &&
+						strcmp(action, "branch") &&
+						rev != 0) {
 					list_depot_files_add(&prev->list_of_modified_files,
 							kw->val.buf, rev, 1, mode);
 				}
