@@ -2395,23 +2395,20 @@ static int p4revtoi(const char *p4rev)
 	return n;
 }
 
-static void add_list_files_from_changelist(struct list_head *list_changes, struct depot_change_range_t *chrng)
+
+static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
+		struct depot_changelist_desc_t *current,
+		const char *depot_path,
+		int changelist)
 {
 	const char *depotfile_str = "depotFile";
 	const int depotfile_len = strlen(depotfile_str);
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
-	struct depot_changelist_desc_t *prev, *current;
-	prev = malloc(sizeof(struct depot_changelist_desc_t));
-	current = malloc(sizeof(struct depot_changelist_desc_t));
-	INIT_DEPOT_CHANGELIST_DESC(prev);
-	INIT_DEPOT_CHANGELIST_DESC(current);
-	strbuf_addbuf(&prev->depot_base, &chrng->depot_path);
-	strbuf_addbuf(&current->depot_base, &chrng->depot_path);
 	str_dict_init(&map);
 	argv_array_push(&child_p4.args, "describe");
 	argv_array_push(&child_p4.args, "-S");
-	argv_array_pushf(&child_p4.args, "%d", chrng->start_changelist);
+	argv_array_pushf(&child_p4.args, "%d", changelist);
 	child_p4.out = -1;
 	p4_start_command(&child_p4);
 	while (py_marshal_parse(&map, child_p4.out))
@@ -2423,7 +2420,7 @@ static void add_list_files_from_changelist(struct list_head *list_changes, struc
 		const char *p4user;
 		assert(str_dict_strcmp(&map, "code", NULL));
 		if (!str_dict_strcmp(&map, "code", "error"))
-			die("Error geting description for change %d", chrng->start_changelist);
+			die("Error geting description for change %d", changelist);
 		if (!str_dict_strcmp(&map, "code", "info"))
 			continue;
 		changelist = atoi(str_dict_get_value(&map, "change"));
@@ -2431,10 +2428,10 @@ static void add_list_files_from_changelist(struct list_head *list_changes, struc
 		hashmap_iter_init(&map, &hm_iter);
 		strbuf_addbuf(&current->desc, &str_dict_get_kw(&map, "desc")->val);
 		strbuf_addf(&current->desc,
-			"\n[git-p4-cherry-pick: %s...@=%d]", chrng->depot_path.buf, chrng->start_changelist);
+			"\n[git-p4-cherry-pick: %s...@=%d]", depot_path, changelist);
 		strbuf_addbuf(&prev->desc, &str_dict_get_kw(&map, "desc")->val);
 		strbuf_addf(&prev->desc,
-			"\n[git-p4-cherry-pick: %s...@=%d~]", chrng->depot_path.buf, chrng->start_changelist);
+			"\n[git-p4-cherry-pick: %s...@=%d~]", depot_path, changelist);
 		strbuf_addbuf(&current->changelist_or_commit, &str_dict_get_kw(&map, "change")->val);
 		strbuf_addbuf(&prev->changelist_or_commit, &str_dict_get_kw(&map, "change")->val);
 		p4user = p4usermap_cache_get_name_email_str_by_user(str_dict_get_kw(&map, "user")->val.buf);
@@ -2481,11 +2478,26 @@ static void add_list_files_from_changelist(struct list_head *list_changes, struc
 			}
 		}
 	}
-	list_add(&current->list, list_changes);
-	list_add(&prev->list, list_changes);
 	close(child_p4.out);
 	str_dict_destroy(&map);
 	finish_command(&child_p4);
+}
+
+static void add_list_files_from_changelist_range(struct list_head *list_changes, struct depot_change_range_t *chrng)
+{
+	struct depot_changelist_desc_t *prev, *current;
+	prev = malloc(sizeof(struct depot_changelist_desc_t));
+	current = malloc(sizeof(struct depot_changelist_desc_t));
+	INIT_DEPOT_CHANGELIST_DESC(prev);
+	INIT_DEPOT_CHANGELIST_DESC(current);
+	strbuf_addbuf(&prev->depot_base, &chrng->depot_path);
+	strbuf_addbuf(&current->depot_base, &chrng->depot_path);
+	add_list_files_from_changelist(prev,
+			current,
+			chrng->depot_path.buf,
+			chrng->start_changelist);
+	list_add(&current->list, list_changes);
+	list_add(&prev->list, list_changes);
 }
 
 static int strbuf_fast_import_commit_header(int fd_out, struct depot_changelist_desc_t *pcl, const char *ref, int mark_id)
@@ -2548,7 +2560,7 @@ static void p4export_change(int fd_out, struct depot_change_range_t *chg_range)
 	INIT_DEPOT_CHANGELIST_DESC(&prev_commit);
 	prev_commit.change_source = CHANGE_SRC_GIT;
 	strbuf_addstr(&prev_commit.changelist_or_commit, oid_to_hex(&null_oid));
-	add_list_files_from_changelist(&list_of_changes, chg_range);
+	add_list_files_from_changelist_range(&list_of_changes, chg_range);
 	list_for_each(pos, &list_of_changes) {
 		struct depot_changelist_desc_t *this_change = list_entry(pos, struct depot_changelist_desc_t, list);
 		if (CHANGE_SRC_P4 == this_change->change_source) {
