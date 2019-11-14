@@ -1,4 +1,4 @@
-all:: git-remote-p4$X
+all:: git-remote-p4$X git-p4$X
 
 CC = cc
 RM = rm -f
@@ -40,3 +40,6 @@ LIBS = $(GIT_LIB) $(XDIFF_LIB) $(COMMON_MAIN)
 
 git-remote-p4$X: remote-p4.o $(LIBS)
 	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ remote-p4.o $(LIBS)
+
+git-p4$X: p4.o $(LIBS)
+	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ p4.o $(LIBS)
