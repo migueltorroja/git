@@ -3048,6 +3048,7 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 		struct child_process child_p4 = CHILD_PROCESS_INIT;
 		struct hashmap p4_change;
 		struct depot_changelist_desc_t *change_elem = NULL;
+		struct strbuf git_reference = STRBUF_INIT;
 		LIST_HEAD(list_of_changes);
 		str_dict_init(&settings_map);
 		str_dict_init(&p4_change);
@@ -3085,9 +3086,15 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 			strbuf_addstr(&change_elem->depot_base, depot_path);
 			strbuf_addstr(&change_elem->changelist_or_commit,
 						str_dict_get_value(&p4_change, "change"));
+			add_list_files_from_changelist(NULL, change_elem,
+					depot_path,
+					atoi(change_elem->changelist_or_commit.buf));
 			list_add_tail(&change_elem->list, &list_of_changes);
 		}
 		finish_command(&child_p4);
+		strbuf_addf(&git_reference, "refs/remotes/p4/%s", kw->key.buf);
+		p4export_list_changes(STDOUT_FILENO, &list_of_changes, git_reference.buf);
+		strbuf_release(&git_reference);
 		list_depot_changelist_desc_destroy(&list_of_changes);
 		str_dict_destroy(&p4_change);
 		str_dict_destroy(&settings_map);
