@@ -3048,8 +3048,15 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 		const keyval_t *kw = container_of(entry, const keyval_t, ent);
 		struct child_process child_p4 = CHILD_PROCESS_INIT;
 		struct hashmap p4_change;
+		struct depot_changelist_desc_t *change_elem = NULL;
+		LIST_HEAD(list_of_changes);
 		str_dict_init(&settings_map);
 		str_dict_init(&p4_change);
+		change_elem = malloc(sizeof(struct depot_changelist_desc_t));
+		INIT_DEPOT_CHANGELIST_DESC(change_elem);
+		change_elem->change_source = CHANGE_SRC_GIT;
+		strbuf_addbuf(&change_elem->changelist_or_commit, &kw->val);
+		list_add_tail(&change_elem->list, &list_of_changes);
 		extract_log_message(kw->val.buf, &sb);
 		extract_p4_settings_git_log(&settings_map, sb.buf);
 		depot_path = str_dict_get_value(&settings_map, "depot-paths");
@@ -3073,9 +3080,16 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 				fprintf(p4_verbose_debug.fp, "fetching %s...@=%s\n", depot_path,
 						str_dict_get_value(&p4_change, "change"));
 			}
-			str_dict_print(stdout, &p4_change);
+			change_elem = malloc(sizeof(struct depot_changelist_desc_t));
+			INIT_DEPOT_CHANGELIST_DESC(change_elem);
+			change_elem->change_source = CHANGE_SRC_P4;
+			strbuf_addstr(&change_elem->depot_base, depot_path);
+			strbuf_addstr(&change_elem->changelist_or_commit,
+						str_dict_get_value(&p4_change, "change"));
+			list_add_tail(&change_elem->list, &list_of_changes);
 		}
 		finish_command(&child_p4);
+		list_depot_changelist_desc_destroy(&list_of_changes);
 		str_dict_destroy(&p4_change);
 		str_dict_destroy(&settings_map);
 		strbuf_release(&sb);
