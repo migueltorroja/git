@@ -2553,22 +2553,19 @@ static void p4export_apply_file_changes(int fd_out, struct depot_changelist_desc
 	}
 }
 
-static void p4export_change(int fd_out, struct depot_change_range_t *chg_range)
+static int p4export_list_changes(int fd_out, struct list_head *plist, const char *ref)
 {
-	LIST_HEAD(list_of_changes);
 	struct list_head *pos;
-	char tmp_ref[] = "refs/temp/p4/XXXXXX";
 	int mark_id = 1;
 	struct depot_changelist_desc_t prev_commit;
 	INIT_DEPOT_CHANGELIST_DESC(&prev_commit);
 	prev_commit.change_source = CHANGE_SRC_GIT;
 	strbuf_addstr(&prev_commit.changelist_or_commit, oid_to_hex(&null_oid));
-	add_list_files_from_changelist_range(&list_of_changes, chg_range);
-	list_for_each(pos, &list_of_changes) {
+	list_for_each(pos, plist) {
 		struct depot_changelist_desc_t *this_change = list_entry(pos, struct depot_changelist_desc_t, list);
 		if (CHANGE_SRC_P4 == this_change->change_source) {
 			int this_change_mark_id = mark_id;
-			mark_id = strbuf_fast_import_commit_header(fd_out, this_change, tmp_ref, mark_id);
+			mark_id = strbuf_fast_import_commit_header(fd_out, this_change, ref, mark_id);
 			write_str_in_full(fd_out, "from ");
 			write_str_in_full(fd_out, prev_commit.changelist_or_commit.buf);
 			write_str_in_full(fd_out, "\n");
@@ -2576,17 +2573,30 @@ static void p4export_change(int fd_out, struct depot_change_range_t *chg_range)
 			strbuf_setlen(&prev_commit.changelist_or_commit, 0);
 			strbuf_addf(&prev_commit.changelist_or_commit, ":%d", this_change_mark_id);
 		}
+		else if (CHANGE_SRC_GIT == this_change->change_source){
+			strbuf_setlen(&prev_commit.changelist_or_commit, 0);
+			strbuf_addbuf(&prev_commit.changelist_or_commit, &this_change->changelist_or_commit);
+		}
 		else
 			die("Only p4 changes for now\n");
 	}
-	write_str_in_full(fd_out, "\nreset ");
-	write_str_in_full(fd_out, tmp_ref);
-	write_str_in_full(fd_out, "\n");
-	write_str_in_full(fd_out, "get-mark ");
-	write_str_in_full(fd_out, prev_commit.changelist_or_commit.buf);
-	write_str_in_full(fd_out, "\n");
-	write_str_in_full(fd_out, "done\n");
 	depot_changelist_desc_destroy(&prev_commit);
+	return mark_id;
+}
+
+static void p4export_change(int fd_out, struct depot_change_range_t *chg_range)
+{
+	LIST_HEAD(list_of_changes);
+	char tmp_ref[] = "refs/temp/p4/XXXXXX";
+	struct strbuf export_done = STRBUF_INIT;
+	int next_mark_id = -1;
+	add_list_files_from_changelist_range(&list_of_changes, chg_range);
+	next_mark_id = p4export_list_changes(fd_out, &list_of_changes, tmp_ref);
+	strbuf_addf(&export_done, "\nreset %s\n", tmp_ref);
+	strbuf_addf(&export_done, "get-mark :%d\n", next_mark_id - 1);
+	strbuf_addf(&export_done, "done\n");
+	write_str_in_full(fd_out, export_done.buf);
+	strbuf_release(&export_done);
 	list_depot_changelist_desc_destroy(&list_of_changes);
 
 }
