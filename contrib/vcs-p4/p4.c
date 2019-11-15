@@ -3046,7 +3046,10 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 		const char *depot_path = NULL;
 		int changelist;
 		const keyval_t *kw = container_of(entry, const keyval_t, ent);
+		struct child_process child_p4 = CHILD_PROCESS_INIT;
+		struct hashmap p4_change;
 		str_dict_init(&settings_map);
+		str_dict_init(&p4_change);
 		extract_log_message(kw->val.buf, &sb);
 		extract_p4_settings_git_log(&settings_map, sb.buf);
 		depot_path = str_dict_get_value(&settings_map, "depot-paths");
@@ -3054,8 +3057,28 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 		if (IS_LOG_DEBUG_ALLOWED) {
 			fprintf(p4_verbose_debug.fp, "%s...@%d\n", depot_path, changelist);
 		}
-		strbuf_release(&sb);
+		child_p4.out = -1;
+		argv_array_push(&child_p4.args, "changes");
+		argv_array_push(&child_p4.args, "-r");
+		argv_array_pushf(&child_p4.args, "%s...@%d,#head", depot_path, changelist + 1);
+		p4_start_command(&child_p4);
+		while (py_marshal_parse(&p4_change, child_p4.out)) {
+			if (!str_dict_has(&p4_change, "code"))
+				continue;
+			if (str_dict_strcmp(&p4_change, "code", "stat"))
+				continue;
+			if (!str_dict_has(&p4_change, "change"))
+				continue;
+			if (IS_LOG_DEBUG_ALLOWED) {
+				fprintf(p4_verbose_debug.fp, "fetching %s...@=%s\n", depot_path,
+						str_dict_get_value(&p4_change, "change"));
+			}
+			str_dict_print(stdout, &p4_change);
+		}
+		finish_command(&child_p4);
+		str_dict_destroy(&p4_change);
 		str_dict_destroy(&settings_map);
+		strbuf_release(&sb);
 	}
 	str_dict_destroy(&map);
 }
