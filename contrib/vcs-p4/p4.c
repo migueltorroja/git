@@ -2415,7 +2415,6 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 	{
 		struct hashmap_iter hm_iter;
 		const struct hashmap_entry *entry;
-		unsigned int changelist;
 		int is_shelved;
 		const char *p4user;
 		assert(str_dict_strcmp(&map, "code", NULL));
@@ -2423,7 +2422,7 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 			die("Error geting description for change %d", changelist);
 		if (!str_dict_strcmp(&map, "code", "info"))
 			continue;
-		changelist = atoi(str_dict_get_value(&map, "change"));
+		//changelist = atoi(str_dict_get_value(&map, "change"));
 		is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
 		p4user = p4usermap_cache_get_name_email_str_by_user(str_dict_get_kw(&map, "user")->val.buf);
 		strbuf_addbuf(&current->desc, &str_dict_get_kw(&map, "desc")->val);
