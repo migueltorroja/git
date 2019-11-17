@@ -2678,7 +2678,7 @@ void p4submit_cmd_init(struct command_t *pcmd)
 	pcmd->needs_git = 0;
 	pcmd->verbose = 0;
 	pcmd->run_fn = p4submit_cmd_run;
-	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->deinit_fn = p4submit_cmd_deinit;
 	pcmd->data = NULL;
 	memset(&p4submit_options, 0, sizeof(p4submit_options));
 	strbuf_init(&p4submit_options.base_commit, 0);
