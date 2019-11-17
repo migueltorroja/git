@@ -1,4 +1,4 @@
-all:: git-remote-p4$X git-p4$X
+all:: git-remote-p4$X git-p4$X test-md5$X
 
 CC = cc
 RM = rm -f
@@ -40,8 +40,9 @@ LIBS = $(GIT_LIB) $(XDIFF_LIB) $(COMMON_MAIN)
 P4LIB_OBJS = py-marshal.o strbuf-dict.o
 REMOTE_P4_OBJS = remote-p4.o
 GIT_P4_OBJS = p4.o
+TEST_MD5_OBJS = mddriver.o md5.o
 
-OBJECTS = $(P4LIB_OBJS) $(REMOTE_P4_OBJS) $(GIT_P4_OBJS)
+OBJECTS = $(P4LIB_OBJS) $(REMOTE_P4_OBJS) $(GIT_P4_OBJS) $(TEST_MD5_OBJS)
 
 dep_check = $(shell $(CC) $(CFLAGS) $(CPPFLAGS)\
 	-c -MF /dev/null -MQ /dev/null -MMD -MP \
@@ -75,7 +76,11 @@ git-remote-p4$X: $(REMOTE_P4_OBJS) $(P4LIB_OBJS) $(LIBS)
 git-p4$X: $(GIT_P4_OBJS) $(P4LIB_OBJS) $(LIBS)
 	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ $(GIT_P4_OBJS) $(LIBS) $(P4LIB_OBJS)
 
+test-md5$X: $(TEST_MD5_OBJS)
+	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ $^
+
 clean:
 	$(RM) -fr $(OBJECTS) $(dep_dirs)
 	$(RM) -f git-remote-p4$X
 	$(RM) -f git-p4$X
+	$(RM) -f test-md5$X
