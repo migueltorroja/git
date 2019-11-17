@@ -24,6 +24,7 @@ struct depot_file_t
 	int is_revision;
 	unsigned mode;
 	struct list_head lhead;
+	struct object_id md5;
 };
 
 #define DEPOT_FILE_INIT {STRBUF_INIT, 0, 0}
@@ -2168,10 +2169,16 @@ static void depot_file_init(struct depot_file_t *p)
 	p->chg_rev = 0;
 	p->is_revision = 0;
 	p->mode = 0;
+	p->md5 = null_oid;
 	INIT_LIST_HEAD(&p->lhead);
 }
 
-static void depot_file_set(struct depot_file_t *p, const char *str, unsigned int chg_rev, unsigned int is_revision, unsigned mode)
+static void depot_file_set(struct depot_file_t *p,
+		const char *str,
+		unsigned int chg_rev,
+		unsigned int is_revision,
+		unsigned mode,
+		struct object_id md5)
 {
 	strbuf_reset(&p->depot_path_file);
 	strbuf_addstr(&p->depot_path_file, str);
@@ -2187,6 +2194,7 @@ static void depot_file_copy(struct depot_file_t *dst, struct depot_file_t *src)
 	dst->chg_rev = src->chg_rev;
 	dst->is_revision = src->is_revision;
 	dst->mode = src->mode;
+	dst->md5 = src->md5;
 }
 
 static void depot_file_printf(FILE *fp, struct depot_file_t *p)
@@ -2204,7 +2212,12 @@ static void depot_file_destroy(struct depot_file_t *p)
 	strbuf_release(&p->depot_path_file);
 }
 
-static void list_depot_files_add(struct list_head *list_depot_files, const char *depot_file, unsigned int chg_rev, int is_revision, unsigned mode)
+static void list_depot_files_add(struct list_head *list_depot_files,
+		const char *depot_file,
+		unsigned int chg_rev,
+		int is_revision,
+		unsigned mode,
+		struct object_id md5)
 {
 	struct depot_file_t *df = malloc(sizeof(struct depot_file_t));
 	depot_file_init(df);
@@ -2447,19 +2460,29 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 				unsigned int rev = 0;
 				const char *action = str_dict_get_valuef(&map, "action%s", dp_suffix);
 				unsigned mode;
+				struct object_id md5;
 				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
 				mode = p4type2mode(str_dict_get_valuef(&map, "type%s", dp_suffix));
+				get_oid_hex(str_dict_get_valuef(&map, "digest%s", dp_suffix), &md5);
+				if (IS_LOG_DEBUG_ALLOWED) {
+					fprintf(p4_verbose_debug.fp, "%s#%d (%06o) %s\n",
+							kw->val.buf,
+							rev,
+							mode,
+							oid_to_hex(&md5)
+							);
+				}
 				if (is_shelved) {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, null_oid);
 					else
-						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode);
+						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, md5);
 				}
 				else {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, null_oid);
 					else
-						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode);
+						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, md5);
 					if (rev)
 						rev --; //Previous revision
 				}
@@ -2475,7 +2498,7 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 						strcmp(action, "branch") &&
 						rev != 0) {
 					list_depot_files_add(&prev->list_of_modified_files,
-							kw->val.buf, rev, 1, mode);
+							kw->val.buf, rev, 1, mode, null_oid);
 				}
 			}
 		}
@@ -2915,10 +2938,10 @@ static void p4discover_branches_find_branches(struct list_head *new_branches, co
 			assert(str_dict_get_value(&map, "change0"));
 			depot_file_set(&branch_depot_path,
 					str_dict_get_value(&map, "depotFile"),
-					atoi(str_dict_get_value(&map, "change0")), 0, 040000);
+					atoi(str_dict_get_value(&map, "change0")), 0, 040000, null_oid);
 			depot_file_set(&branch_base_depot_path,
 					branch_from,
-					0, 0, 040000);
+					0, 0, 040000, null_oid);
 			strbuf_strip_suffix(&branch_depot_path.depot_path_file, sub_file_name.buf);
 			strbuf_strip_suffix(&branch_base_depot_path.depot_path_file, sub_file_name.buf);
 			LOG_GITP4_DEBUG("After stripping: %s (%s)\n",
