@@ -1018,16 +1018,6 @@ static int p4_sync(const char *client_path, struct string_list *local_files, con
 	return retp4;
 }
 
-static int p4_sync_force_dir(const char *client_path, const char *version_suffix)
-{
-	return p4_sync(client_path, NULL, version_suffix, 1);
-}
-
-static int p4_sync_dir(const char *client_path, const char *version_suffix)
-{
-	return p4_sync(client_path, NULL, version_suffix, 0);
-}
-
 static int p4_sync_file_opt(const char *client_path, const char *filename, const char *version_suffix, int force_sync)
 {
 	struct string_list syncfiles = STRING_LIST_INIT_DUP;
@@ -1038,24 +1028,9 @@ static int p4_sync_file_opt(const char *client_path, const char *filename, const
 	return retp4sync;
 }
 
-static int p4_sync_file(const char *client_path, const char *filename, const char *version_suffix)
-{
-	return p4_sync_file_opt(client_path, filename, version_suffix, 0);
-}
-
 static int p4_sync_force_file(const char *client_path, const char *filename, const char *version_suffix)
 {
 	return p4_sync_file_opt(client_path, filename, version_suffix, 1);
-}
-
-static int dir_exists(const char *path)
-{
-	struct stat st;
-	if (stat(path, &st))
-		return 0;
-	if ((st.st_mode & S_IFMT) == S_IFDIR)
-		return 1;
-	return 0;
 }
 
 void p4debug_cmd_init(struct command_t *pcmd)
@@ -1316,17 +1291,6 @@ static inline void p4_files_modified_destroy(struct files_modified_t *fm)
 }
 
 
-static void p4submit_full_depot_path(const char *sub_path, struct strbuf *full_depot_path)
-{
-	strbuf_reset(full_depot_path);
-	if (!p4submit_options.depot_path.len)
-		return;
-	strbuf_addbuf(full_depot_path, &p4submit_options.depot_path);
-	if (p4submit_options.depot_path.buf[p4submit_options.depot_path.len - 1] != '/')
-		strbuf_addstr(full_depot_path, "/");
-	strbuf_addstr(full_depot_path, sub_path);
-}
-
 static int wildcard_present(const char *path)
 {
 	const char wildcards[] = "[*#@%]";
@@ -1365,11 +1329,6 @@ static void wildcard_encode(struct strbuf *sb)
 	strbuf_reset(sb);
 	strbuf_addbuf(sb,&sb_tmp);
 	strbuf_release(&sb_tmp);
-}
-
-static void wildcard_decode(struct strbuf *sb)
-{
-	die("Not implemented");
 }
 
 static int p4_edit(const char *client_dir, const char *path, int auto_type)
@@ -1432,11 +1391,6 @@ static int p4_delete(const char *client_dir, const char *path)
 	argv_array_clear(&p4args);
 	strbuf_release(&q_path);
 	return rout;
-}
-
-static int p4_has_move_command(void)
-{
-	return 0;
 }
 
 static int is_git_mode_exec_changed(const char *src_mode, const char *dst_mode)
@@ -1934,11 +1888,13 @@ static void p4usermap_cache_destroy()
 	p4usermap_cached = NULL;
 }
 
+#if 0
 static const char *p4usermap_cache_get_user_by_email(const char *email)
 {
 	struct p4_user_map_t *p4users = p4usermap_get_cache();
 	return str_dict_get_value(&p4users->emails, email);
 }
+#endif
 
 static const char *p4usermap_cache_get_name_email_str_by_user(const char *user)
 {
@@ -1948,18 +1904,6 @@ static const char *p4usermap_cache_get_name_email_str_by_user(const char *user)
 		return email;
 	str_dict_set_key_valf(&p4users->users, user, "%s <>", user);
 	return str_dict_get_value(&p4users->users, user);
-}
-
-static void p4submit_user_for_commit(const char *commit, struct strbuf *user, struct strbuf *email)
-{
-	const char *git_cmd_list[] = {"log", "--max-count=1", "--format=%ae", commit, NULL};
-	const char *_usr;
-	git_cmd_read_pipe_full(git_cmd_list, email);
-	strbuf_trim(email);
-	strbuf_reset(user);
-	_usr = p4usermap_cache_get_user_by_email(email->buf);
-	if (_usr)
-		strbuf_addstr(user,_usr);
 }
 
 static int p4submit_git_config(const char *k, const char *v, void *cb)
@@ -2011,26 +1955,6 @@ struct dump_file_state
 	struct strbuf prefix_depot;
 	struct strbuf dirname;
 };
-
-static int sha1_hash_map(struct hashmap *map, unsigned char *sha1)
-{
-	git_SHA_CTX ctx;
-	git_SHA1_Init(&ctx);
-	if (!hashmap_get_size(map))
-		return -1;
-	struct hashmap_iter hm_iter;
-	struct hashmap_entry *entry;
-	hashmap_iter_init(map, &hm_iter);
-	entry = hashmap_iter_next(&hm_iter);
-	assert(NULL != entry);
-	for (; entry; entry = hashmap_iter_next(&hm_iter)) {
-		const keyval_t *kw = container_of(entry, const keyval_t, ent);
-		git_SHA1_Update(&ctx, kw->key.buf, kw->key.len);
-		git_SHA1_Update(&ctx, kw->val.buf, kw->val.len);
-	}
-	git_SHA1_Final(sha1, &ctx);
-	return 0;
-}
 
 static int mkstemp_unnamed()
 {
@@ -2240,6 +2164,7 @@ static void list_depot_files_destroy(struct list_head *list_depot_files)
 	}
 }
 
+#if 0
 static void list_depot_files_printf(FILE *fp, struct list_head *list_depot_files)
 {
 	struct list_head *pos;
@@ -2250,6 +2175,7 @@ static void list_depot_files_printf(FILE *fp, struct list_head *list_depot_files
 		fprintf(fp, "\n");
 	}
 }
+#endif
 
 static void depot_file_pair_init(struct depot_file_pair_t *dp)
 {
@@ -2284,21 +2210,6 @@ static void list_depot_files_pair_destroy(struct list_head *list_depot_files)
 	}
 }
 
-static void depot_changelist_desc_reset(struct depot_changelist_desc_t *cl)
-{
-	cl->change_source = CHANGE_SRC_P4;
-	strbuf_reset(&cl->changelist_or_commit);
-	strbuf_reset(&cl->desc);
-	strbuf_reset(&cl->time);
-	strbuf_reset(&cl->committer);
-	strbuf_reset(&cl->depot_base);
-	list_depot_files_destroy(&cl->list_of_deleted_files);
-	list_depot_files_destroy(&cl->list_of_modified_files);
-	INIT_LIST_HEAD(&cl->list_of_deleted_files);
-	INIT_LIST_HEAD(&cl->list_of_modified_files);
-	INIT_LIST_HEAD(&cl->list);
-}
-
 static void depot_changelist_desc_destroy(struct depot_changelist_desc_t *cl)
 {
 	strbuf_release(&cl->changelist_or_commit);
@@ -2319,20 +2230,6 @@ static void list_depot_changelist_desc_destroy(struct list_head *list_changes)
 		dp = list_entry(pos, struct depot_changelist_desc_t, list);
 		depot_changelist_desc_destroy(dp);
 		free(dp);
-	}
-}
-
-
-static void argv_array_push_depot_files(struct argv_array *args, struct list_head *list_depot_files)
-{
-	struct list_head *pos;
-	list_for_each(pos, list_depot_files) {
-		struct depot_file_t *dp;
-		dp = list_entry(pos, struct depot_file_t, lhead);
-		if (dp->is_revision)
-			argv_array_pushf(args,"%s#%d", dp->depot_path_file.buf, dp->chg_rev);
-		else
-			argv_array_pushf(args,"%s@=%d", dp->depot_path_file.buf, dp->chg_rev);
 	}
 }
 
@@ -3049,9 +2946,11 @@ void p4discover_branches_cmd_init(struct command_t *pcmd)
 
 static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
+#if 0
 	struct option options[] = {
 		OPT_END()
 	};
+#endif
 	struct hashmap map;
 	struct hashmap_iter hm_iter;
 	struct hashmap_entry *entry;
@@ -3190,63 +3089,6 @@ void p4fast_export_cmd_init(struct command_t *pcmd)
 	pcmd->deinit_fn = p4_cmd_default_deinit;
 	pcmd->data = NULL;
 }
-
-static int git_rm(const char *filename)
-{
-	struct child_process child_git = CHILD_PROCESS_INIT;
-	child_git.git_cmd = 1;
-	argv_array_push(&child_git.args, "rm");
-	argv_array_push(&child_git.args, filename);
-	if (start_command(&child_git))
-		die("cannot run git rm %s", filename);
-	return finish_command(&child_git);
-}
-
-static int git_add(const char *filename)
-{
-	struct child_process child_git = CHILD_PROCESS_INIT;
-	child_git.git_cmd = 1;
-	argv_array_push(&child_git.args, "add");
-	argv_array_push(&child_git.args, filename);
-	if (start_command(&child_git))
-		die("cannot run git rm %s", filename);
-	return finish_command(&child_git);
-}
-
-#if 0
-static void list_depot_files_pair_to_worktree(const char *depot_prefix, const char *dest_dir, struct list_head *list_depot_files_pair)
-{
-	struct list_head *pos;
-	list_for_each(pos, list_depot_files_pair) {
-		struct dump_file_state d_state = {STRBUF_INIT, STRBUF_INIT};
-		struct depot_file_pair_t *dp;
-		strbuf_addstr(&d_state.prefix_depot, depot_prefix);
-		strbuf_addstr(&d_state.dirname, dest_dir);
-		dp = list_entry(pos, struct depot_file_pair_t, lhead);
-		if (dp->b.depot_path_file.len) {
-			const char *filen = NULL;
-			if (starts_with(dp->b.depot_path_file.buf, d_state.prefix_depot.buf)) {
-				filen = dp->b.depot_path_file.buf + d_state.prefix_depot.len;
-				if (*filen == '/')
-					filen++;
-				p4_dump(&d_state, &dp->b);
-				git_add(filen);
-			}
-		}
-		else if (dp->a.depot_path_file.len) {
-			const char *filen = NULL;
-			if (starts_with(dp->b.depot_path_file.buf, d_state.prefix_depot.buf)) {
-				filen = dp->b.depot_path_file.buf + d_state.prefix_depot.len;
-				if (*filen == '/')
-					filen++;
-				git_rm(filen);
-			}
-		}
-		strbuf_release(&d_state.dirname);
-		strbuf_release(&d_state.prefix_depot);
-	}
-}
-#endif
 
 void p4format_patch_cmd_init(struct command_t *pcmd)
 {
