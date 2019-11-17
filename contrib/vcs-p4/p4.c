@@ -2621,7 +2621,7 @@ int git_commit(struct hashmap *map)
 	}
 	FILE *fp = fdopen(git_fast_import.in, "w");
 	fprintf(fp, "commit %s\n", str_dict_get_value(map, "branch"));
-	fprintf(fp, "committer %s %"PRIuMAX" +0000\n",
+	fprintf(fp, "committer %s %d +0000\n",
 			str_dict_get_value(map, "committer"),
 			atoi(str_dict_get_value(map, "time")));
 	fprintf(fp, "data %"PRIuMAX"\n", strlen(msg));
@@ -2715,7 +2715,7 @@ static void p4discover_branches_find_p4_parent(struct depot_file_pair_t *depot_p
 	finish_command(&child_p4);
 	get_p4describe(&map, base_candidate);
 	if (IS_LOG_DEBUG_ALLOWED) {
-		LOG_GITP4_DEBUG("p4 describe %"PRIuMAX"\n", base_candidate);
+		LOG_GITP4_DEBUG("p4 describe %u\n", base_candidate);
 		str_dict_print(p4_verbose_debug.fp, &map);
 	}
 	for (count_changes = 0, p = str_dict_get_value(&map, "depotFile0"); p;
