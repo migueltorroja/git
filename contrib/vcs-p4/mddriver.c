@@ -18,17 +18,7 @@
    */
 
 #include "git-compat-util.h"
-
-#define MD 5
-#if MD == 2
-#include "md2.h"
-#endif
-#if MD == 4
-#include "md4.h"
-#endif
-#if MD == 5
 #include "md5.h"
-#endif
 
 /* Length of test block, number of test blocks.
 */
@@ -42,24 +32,10 @@ static void MDFile (char *);
 static void MDFilter (void);
 static void MDPrint (uint8_t [16]);
 
-#if MD == 2
-#define MD_CTX MD2_CTX
-#define MDInit MD2Init
-#define MDUpdate MD2Update
-#define MDFinal MD2Final
-#endif
-#if MD == 4
-#define MD_CTX MD4_CTX
-#define MDInit MD4Init
-#define MDUpdate MD4Update
-#define MDFinal MD4Final
-#endif
-#if MD == 5
 #define MD_CTX MD5_CTX
 #define MDInit MD5Init
 #define MDUpdate MD5Update
 #define MDFinal MD5Final
-#endif
 
 /* Main driver.
 
@@ -105,7 +81,7 @@ static void MDString (string)
 	MDUpdate (&context, (uint8_t *)string, len);
 	MDFinal (digest, &context);
 
-	printf ("MD%d (\"%s\") = ", MD, string);
+	printf ("MD5 (\"%s\") = ", string);
 	MDPrint (digest);
 	printf ("\n");
 }
@@ -121,7 +97,7 @@ static void MDTimeTrial ()
 	size_t i;
 
 	printf
-		("MD%d time trial. Digesting %d %d-byte blocks ...", MD,
+		("MD5 time trial. Digesting %d %d-byte blocks ...",
 		 TEST_BLOCK_LEN, TEST_BLOCK_COUNT);
 
 	/* Initialize block */
@@ -153,7 +129,7 @@ static void MDTimeTrial ()
 */
 static void MDTestSuite ()
 {
-	printf ("MD%d test suite:\n", MD);
+	printf ("MD5 test suite:\n");
 
 	MDString("");
 	MDString("a");
@@ -186,7 +162,7 @@ static void MDFile (filename)
 
 		fclose (file);
 
-		printf ("MD%d (%s) = ", MD, filename);
+		printf ("MD5 (%s) = ", filename);
 		MDPrint (digest);
 		printf ("\n");
 	}
