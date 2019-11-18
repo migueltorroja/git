@@ -174,11 +174,11 @@ char *filename;
 {
   FILE *file;
   MD_CTX context;
-  int len;
-  unsigned char buffer[1024], digest[16];
+  size_t len;
+  uint8_t buffer[1024], digest[16];
 
   if ((file = fopen (filename, "rb")) == NULL)
- printf ("%s can't be opened\n", filename);
+      printf ("%s can't be opened\n", filename);
 
   else {
  MDInit (&context);
@@ -199,12 +199,12 @@ char *filename;
 static void MDFilter ()
 {
   MD_CTX context;
-  int len;
-  unsigned char buffer[16], digest[16];
+  size_t len;
+  uint8_t buffer[16], digest[16];
 
   MDInit (&context);
   while ((len = fread (buffer, 1, 16, stdin)))
- MDUpdate (&context, buffer, len);
+  MDUpdate (&context, buffer, len);
   MDFinal (digest, &context);
 
   MDPrint (digest);
@@ -214,7 +214,7 @@ static void MDFilter ()
 /* Prints a message digest in hexadecimal.
  */
 static void MDPrint (digest)
-unsigned char digest[16];
+uint8_t digest[16];
 {
   unsigned int i;
 
