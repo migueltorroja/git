@@ -2129,6 +2129,7 @@ static void depot_file_printf(FILE *fp, struct depot_file_t *p)
 	else
 		fprintf(fp, "@");
 	fprintf(fp, "%d",p->chg_rev);
+	fprintf(fp, " %s", oid_to_hex(&p->md5));
 }
 
 static void depot_file_destroy(struct depot_file_t *p)
@@ -2149,6 +2150,7 @@ static void list_depot_files_add(struct list_head *list_depot_files,
 	df->chg_rev = chg_rev;
 	df->is_revision = is_revision;
 	df->mode = mode;
+	df->md5 = md5;
 	list_add_tail(&df->lhead, list_depot_files);
 }
 
@@ -2164,7 +2166,6 @@ static void list_depot_files_destroy(struct list_head *list_depot_files)
 	}
 }
 
-#if 0
 static void list_depot_files_printf(FILE *fp, struct list_head *list_depot_files)
 {
 	struct list_head *pos;
@@ -2175,7 +2176,6 @@ static void list_depot_files_printf(FILE *fp, struct list_head *list_depot_files
 		fprintf(fp, "\n");
 	}
 }
-#endif
 
 static void depot_file_pair_init(struct depot_file_pair_t *dp)
 {
@@ -3025,6 +3025,74 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 	str_dict_destroy(&map);
 }
 
+static void create_list_of_p4_file_from_changelist(struct list_head *plist, const struct depot_change_range_t *prng)
+{
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap map;
+	str_dict_init(&map);
+	child_p4.out = -1;
+	argv_array_push(&child_p4.args, "fstat");
+	argv_array_push(&child_p4.args, "-Ol");
+	argv_array_pushf(&child_p4.args, "%s...@%d", prng->depot_path.buf, prng->start_changelist);
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&map, child_p4.out))
+	{
+		struct object_id md5 = null_oid;
+		if (str_dict_strcmp(&map, "code", "stat"))
+			continue;
+		if (str_dict_has(&map, "digest")) {
+			get_oid_hex(str_dict_get_value(&map, "digest"), &md5);
+			if (IS_LOG_DEBUG_ALLOWED) {
+				fprintf(p4_verbose_debug.fp, "Digest %s %s\n",
+						str_dict_get_value(&map, "digest"),
+						oid_to_hex(&md5));
+			}
+		}
+		list_depot_files_add(plist,
+				str_dict_get_value(&map, "depotFile"),
+				prng->start_changelist,
+				0,
+				p4type2mode(str_dict_get_value(&map, "headType")),
+				md5);
+	}
+	close(child_p4.out);
+	str_dict_destroy(&map);
+	finish_command(&child_p4);
+}
+
+static void p4fsck_cmd_run(command_t *pcmd, int argc, const char **argv)
+{
+	struct option options[] = {
+		OPT_END()
+	};
+	LIST_HEAD(cl_depot_files);
+	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
+	depot_change_range_destroy(&chg_range);
+	argc = parse_options(argc, argv, NULL, options, NULL, 0);
+	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
+		die("Error parsing changelists");
+	}
+	if (IS_LOG_DEBUG_ALLOWED)
+		print_change_range(p4_verbose_debug.fp, &chg_range);
+	create_list_of_p4_file_from_changelist(&cl_depot_files, &chg_range);
+	if (IS_LOG_DEBUG_ALLOWED)
+		list_depot_files_printf(p4_verbose_debug.fp, &cl_depot_files);
+	list_depot_files_destroy(&cl_depot_files);
+	depot_change_range_destroy(&chg_range);
+}
+
+static void p4fsck_cmd_init(struct command_t *pcmd)
+{
+	strbuf_init(&pcmd->strb_usage, 256);
+	strbuf_addf(&pcmd->strb_usage, "check the integrety of the git repo with p4 depot");
+	strbuf_addf(&pcmd->strb_usage, "Usage: git-p4 fsck depot-path CL");
+	pcmd->needs_git = 0;
+	pcmd->verbose = 0;
+	pcmd->run_fn = p4fsck_cmd_run;
+	pcmd->deinit_fn = p4_cmd_default_deinit;
+	pcmd->data = NULL;
+}
+
 static void p4cherry_pick_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
 	struct option options[] = {
@@ -3125,6 +3193,7 @@ const command_list_t cmd_lst[] =
 	{"cherry-pick", p4cherry_pick_cmd_init},
 	{"fast-export", p4fast_export_cmd_init},
 	{"fetch", p4fetch_cmd_init},
+	{"fsck", p4fsck_cmd_init}
 };
 
 void print_usage(FILE *fp, const char *progname)
