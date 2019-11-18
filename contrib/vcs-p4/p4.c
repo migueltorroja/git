@@ -17,6 +17,15 @@
 #include "strbuf-dict.h"
 
 
+struct md5_id
+{
+	uint8_t md5[16];
+};
+
+const struct md5_id null_md5 = {
+	{0}
+};
+
 struct depot_file_t
 {
 	struct strbuf depot_path_file;
@@ -24,7 +33,7 @@ struct depot_file_t
 	int is_revision;
 	unsigned mode;
 	struct list_head lhead;
-	struct object_id md5;
+	struct md5_id hash;
 };
 
 #define DEPOT_FILE_INIT {STRBUF_INIT, 0, 0}
@@ -100,6 +109,33 @@ struct p4_verbose_debug_t {
 #define P4_VERBOSE_DEBUG_LEVEL		(2)
 
 #define P4_VERBOSE_INIT {0,NULL}
+
+static char *md5_to_hex(struct md5_id *pmd5)
+{
+	char *md5_hex = NULL;
+	struct object_id extended_oid = null_oid;
+	memcpy(&extended_oid.hash, &pmd5->md5, sizeof(pmd5->md5));
+	md5_hex = oid_to_hex(&extended_oid);
+	if (md5_hex)
+		md5_hex[ARRAY_SIZE(pmd5->md5)*2] = '\0';
+	return md5_hex;
+}
+
+static int get_md5_hex(const char *str, struct md5_id *pmd5)
+{
+	int i;
+	uint8_t *pindx = &pmd5->md5[0];
+	for (i = 0; i < ARRAY_SIZE(pmd5->md5); i++) {
+		if (!*str || !*(str + 1))
+			return -1;
+		int val = hex2chr(str);
+		if (val < 0)
+			return -1;
+		*pindx++ = val;
+		str += 2;
+	}
+	return 0;
+}
 
 struct p4_verbose_debug_t p4_verbose_debug = P4_VERBOSE_INIT;
 struct p4_user_map_t *p4usermap_cached;
@@ -2093,7 +2129,7 @@ static void depot_file_init(struct depot_file_t *p)
 	p->chg_rev = 0;
 	p->is_revision = 0;
 	p->mode = 0;
-	p->md5 = null_oid;
+	p->hash = null_md5;
 	INIT_LIST_HEAD(&p->lhead);
 }
 
@@ -2118,7 +2154,7 @@ static void depot_file_copy(struct depot_file_t *dst, struct depot_file_t *src)
 	dst->chg_rev = src->chg_rev;
 	dst->is_revision = src->is_revision;
 	dst->mode = src->mode;
-	dst->md5 = src->md5;
+	dst->hash = src->hash;
 }
 
 static void depot_file_printf(FILE *fp, struct depot_file_t *p)
@@ -2129,7 +2165,7 @@ static void depot_file_printf(FILE *fp, struct depot_file_t *p)
 	else
 		fprintf(fp, "@");
 	fprintf(fp, "%d",p->chg_rev);
-	fprintf(fp, " %s", oid_to_hex(&p->md5));
+	fprintf(fp, " %s", md5_to_hex(&p->hash));
 }
 
 static void depot_file_destroy(struct depot_file_t *p)
@@ -2142,7 +2178,7 @@ static void list_depot_files_add(struct list_head *list_depot_files,
 		unsigned int chg_rev,
 		int is_revision,
 		unsigned mode,
-		struct object_id md5)
+		struct md5_id md5)
 {
 	struct depot_file_t *df = malloc(sizeof(struct depot_file_t));
 	depot_file_init(df);
@@ -2150,7 +2186,7 @@ static void list_depot_files_add(struct list_head *list_depot_files,
 	df->chg_rev = chg_rev;
 	df->is_revision = is_revision;
 	df->mode = mode;
-	df->md5 = md5;
+	df->hash = md5;
 	list_add_tail(&df->lhead, list_depot_files);
 }
 
@@ -2357,27 +2393,27 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 				unsigned int rev = 0;
 				const char *action = str_dict_get_valuef(&map, "action%s", dp_suffix);
 				unsigned mode;
-				struct object_id md5;
+				struct md5_id md5;
 				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
 				mode = p4type2mode(str_dict_get_valuef(&map, "type%s", dp_suffix));
-				get_oid_hex(str_dict_get_valuef(&map, "digest%s", dp_suffix), &md5);
+				get_md5_hex(str_dict_get_valuef(&map, "digest%s", dp_suffix), &md5);
 				if (IS_LOG_DEBUG_ALLOWED) {
 					fprintf(p4_verbose_debug.fp, "%s#%d (%06o) %s\n",
 							kw->val.buf,
 							rev,
 							mode,
-							oid_to_hex(&md5)
+							md5_to_hex(&md5)
 							);
 				}
 				if (is_shelved) {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, null_oid);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, null_md5);
 					else
 						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, md5);
 				}
 				else {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, null_oid);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, null_md5);
 					else
 						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, md5);
 					if (rev)
@@ -2395,7 +2431,7 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 						strcmp(action, "branch") &&
 						rev != 0) {
 					list_depot_files_add(&prev->list_of_modified_files,
-							kw->val.buf, rev, 1, mode, null_oid);
+							kw->val.buf, rev, 1, mode, null_md5);
 				}
 			}
 		}
@@ -3025,6 +3061,7 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 	str_dict_destroy(&map);
 }
 
+
 static void create_list_of_p4_file_from_changelist(struct list_head *plist, const struct depot_change_range_t *prng)
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
@@ -3037,15 +3074,15 @@ static void create_list_of_p4_file_from_changelist(struct list_head *plist, cons
 	p4_start_command(&child_p4);
 	while (py_marshal_parse(&map, child_p4.out))
 	{
-		struct object_id md5 = null_oid;
+		struct md5_id md5;
 		if (str_dict_strcmp(&map, "code", "stat"))
 			continue;
 		if (str_dict_has(&map, "digest")) {
-			get_oid_hex(str_dict_get_value(&map, "digest"), &md5);
+			get_md5_hex(str_dict_get_value(&map, "digest"), &md5);
 			if (IS_LOG_DEBUG_ALLOWED) {
 				fprintf(p4_verbose_debug.fp, "Digest %s %s\n",
 						str_dict_get_value(&map, "digest"),
-						oid_to_hex(&md5));
+						md5_to_hex(&md5));
 			}
 		}
 		list_depot_files_add(plist,
