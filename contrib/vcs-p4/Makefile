@@ -36,11 +36,12 @@ ifndef V
 endif
 endif
 
-LIBS = $(GIT_LIB) $(XDIFF_LIB) $(COMMON_MAIN)
-P4LIB_OBJS = py-marshal.o strbuf-dict.o
+LIBS = $(GIT_LIB) $(XDIFF_LIB)
+MD5_OBJS = md5.o
+P4LIB_OBJS = py-marshal.o strbuf-dict.o $(MD5_OBJS)
 REMOTE_P4_OBJS = remote-p4.o
 GIT_P4_OBJS = p4.o
-TEST_MD5_OBJS = mddriver.o md5.o
+TEST_MD5_OBJS = mddriver.o
 
 OBJECTS = $(P4LIB_OBJS) $(REMOTE_P4_OBJS) $(GIT_P4_OBJS) $(TEST_MD5_OBJS)
 
@@ -71,12 +72,12 @@ endif
 
 
 git-remote-p4$X: $(REMOTE_P4_OBJS) $(P4LIB_OBJS) $(LIBS)
-	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ $(REMOTE_P4_OBJS) $(LIBS) $(P4LIB_OBJS)
+	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ $(COMMON_MAIN) $(REMOTE_P4_OBJS) $(LIBS) $(P4LIB_OBJS)
 
 git-p4$X: $(GIT_P4_OBJS) $(P4LIB_OBJS) $(LIBS)
-	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ $(GIT_P4_OBJS) $(LIBS) $(P4LIB_OBJS)
+	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ $(COMMON_MAIN) $(GIT_P4_OBJS) $(LIBS) $(P4LIB_OBJS)
 
-test-md5$X: $(TEST_MD5_OBJS)
+test-md5$X: $(TEST_MD5_OBJS) $(MD5_OBJS)
 	$(QUIET_LINK)$(CC) $(CFLAGS) $(LDFLAGS) $(EXTLIBS) -o $@ $^
 
 clean:
