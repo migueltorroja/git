@@ -15,6 +15,7 @@
 #include "utf8.h"
 #include "py-marshal.h"
 #include "strbuf-dict.h"
+#include "md5.h"
 
 
 struct md5_id
@@ -26,14 +27,27 @@ const struct md5_id null_md5 = {
 	{0}
 };
 
+int md5cmp(struct md5_id *a, struct md5_id *b)
+{
+	return memcmp(&a->md5, &b->md5, sizeof(a->md5));
+}
+
+#define P4_FORMAT_UNKNOWN_TYPE (0)
+#define P4_FORMAT_TEXT_TYPE (0)
+#define P4_FORMAT_BIN_TYPE (1)
+#define P4_FORMAT_UTF8_TYPE (2)
+#define P4_FORMAT_UTF16_TYPE (3)
+#define P4_FORMAT_LINK_TYPE (4)
+
 struct depot_file_t
 {
 	struct strbuf depot_path_file;
 	unsigned int chg_rev;
 	int is_revision;
 	unsigned mode;
-	struct list_head lhead;
 	struct md5_id hash;
+	int bin_type;
+	struct list_head lhead;
 };
 
 #define DEPOT_FILE_INIT {STRBUF_INIT, 0, 0}
@@ -422,6 +436,25 @@ static unsigned p4type2mode(const char *type)
 	strbuf_release(&mods);
 	strbuf_release(&base);
 	return mode;
+}
+
+static int p4type2bintype(const char *type)
+{
+	struct strbuf base = STRBUF_INIT;
+	struct strbuf mods = STRBUF_INIT;
+	int bin_type = P4_FORMAT_UNKNOWN_TYPE;
+	p4_normalize_type(type, &base, &mods);
+	if (0 == strcmp(base.buf, "symlink"))
+		bin_type = P4_FORMAT_LINK_TYPE;
+	else if (0 == strcmp(base.buf, "utf8"))
+		bin_type = P4_FORMAT_UTF8_TYPE;
+	else if (0 == strcmp(base.buf, "utf16"))
+		bin_type = P4_FORMAT_UTF16_TYPE;
+	else if (0 == strcmp(base.buf, "binary"))
+		bin_type = P4_FORMAT_BIN_TYPE;
+	strbuf_release(&mods);
+	strbuf_release(&base);
+	return bin_type;
 }
 
 static void add_p4_modes(struct strbuf *p4mod, const char *addmods)
@@ -2129,6 +2162,7 @@ static void depot_file_init(struct depot_file_t *p)
 	p->chg_rev = 0;
 	p->is_revision = 0;
 	p->mode = 0;
+	p->bin_type = P4_FORMAT_UNKNOWN_TYPE;
 	p->hash = null_md5;
 	INIT_LIST_HEAD(&p->lhead);
 }
@@ -2138,12 +2172,14 @@ static void depot_file_set(struct depot_file_t *p,
 		unsigned int chg_rev,
 		unsigned int is_revision,
 		unsigned mode,
+		int bin_type,
 		struct object_id md5)
 {
 	strbuf_reset(&p->depot_path_file);
 	strbuf_addstr(&p->depot_path_file, str);
 	p->chg_rev = chg_rev;
 	p->is_revision = is_revision;
+	p->bin_type = bin_type;
 	p->mode = mode;
 }
 
@@ -2154,6 +2190,7 @@ static void depot_file_copy(struct depot_file_t *dst, struct depot_file_t *src)
 	dst->chg_rev = src->chg_rev;
 	dst->is_revision = src->is_revision;
 	dst->mode = src->mode;
+	dst->bin_type = src->bin_type;
 	dst->hash = src->hash;
 }
 
@@ -2178,6 +2215,7 @@ static void list_depot_files_add(struct list_head *list_depot_files,
 		unsigned int chg_rev,
 		int is_revision,
 		unsigned mode,
+		int bin_type,
 		struct md5_id md5)
 {
 	struct depot_file_t *df = malloc(sizeof(struct depot_file_t));
@@ -2186,6 +2224,7 @@ static void list_depot_files_add(struct list_head *list_depot_files,
 	df->chg_rev = chg_rev;
 	df->is_revision = is_revision;
 	df->mode = mode;
+	df->bin_type = bin_type;
 	df->hash = md5;
 	list_add_tail(&df->lhead, list_depot_files);
 }
@@ -2393,9 +2432,11 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 				unsigned int rev = 0;
 				const char *action = str_dict_get_valuef(&map, "action%s", dp_suffix);
 				unsigned mode;
+				int p4_bin_type;
 				struct md5_id md5;
 				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
 				mode = p4type2mode(str_dict_get_valuef(&map, "type%s", dp_suffix));
+				p4_bin_type = p4type2bintype(str_dict_get_valuef(&map, "type%s", dp_suffix));
 				get_md5_hex(str_dict_get_valuef(&map, "digest%s", dp_suffix), &md5);
 				if (IS_LOG_DEBUG_ALLOWED) {
 					fprintf(p4_verbose_debug.fp, "%s#%d (%06o) %s\n",
@@ -2407,15 +2448,15 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 				}
 				if (is_shelved) {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, null_md5);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, p4_bin_type, null_md5);
 					else
-						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, md5);
+						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, p4_bin_type, md5);
 				}
 				else {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, null_md5);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, P4_FORMAT_UNKNOWN_TYPE, null_md5);
 					else
-						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, md5);
+						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, p4_bin_type, md5);
 					if (rev)
 						rev --; //Previous revision
 				}
@@ -2431,7 +2472,7 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 						strcmp(action, "branch") &&
 						rev != 0) {
 					list_depot_files_add(&prev->list_of_modified_files,
-							kw->val.buf, rev, 1, mode, null_md5);
+							kw->val.buf, rev, 1, mode, P4_FORMAT_UNKNOWN_TYPE, null_md5);
 				}
 			}
 		}
@@ -2871,10 +2912,10 @@ static void p4discover_branches_find_branches(struct list_head *new_branches, co
 			assert(str_dict_get_value(&map, "change0"));
 			depot_file_set(&branch_depot_path,
 					str_dict_get_value(&map, "depotFile"),
-					atoi(str_dict_get_value(&map, "change0")), 0, 040000, null_oid);
+					atoi(str_dict_get_value(&map, "change0")), 0, 040000, P4_FORMAT_UNKNOWN_TYPE, null_oid);
 			depot_file_set(&branch_base_depot_path,
 					branch_from,
-					0, 0, 040000, null_oid);
+					0, 0, 040000, P4_FORMAT_UNKNOWN_TYPE, null_oid);
 			strbuf_strip_suffix(&branch_depot_path.depot_path_file, sub_file_name.buf);
 			strbuf_strip_suffix(&branch_base_depot_path.depot_path_file, sub_file_name.buf);
 			LOG_GITP4_DEBUG("After stripping: %s (%s)\n",
@@ -3061,6 +3102,38 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 	str_dict_destroy(&map);
 }
 
+static struct md5_id compute_md5_from_git(const char *commit_sha1,
+		const char *file_path, int p4_file_type)
+{
+	struct child_process git_show = CHILD_PROCESS_INIT;
+	MD5_CTX md5_ctx;
+	struct md5_id md5_o;
+	uint8_t buffer[256];
+	ssize_t sz;
+	MD5Init(&md5_ctx);
+	git_show.out = -1;
+	argv_array_push(&git_show.args, "git");
+	argv_array_push(&git_show.args, "show");
+	argv_array_pushf(&git_show.args, "%s:%s", commit_sha1, file_path);
+	if (start_command(&git_show)) {
+		die("cannot start git show");
+	}
+	while ((sz = read(git_show.out, buffer, sizeof(buffer))) != 0) {
+		if (0 >= sz) {
+			if (EAGAIN == errno)
+				continue;
+			else if (EINTR == errno)
+				continue;
+			else
+				die("read from git show failed");
+		}
+		MD5Update(&md5_ctx, buffer, sz);
+	}
+	close(git_show.out);
+	finish_command(&git_show);
+	MD5Final(md5_o.md5, &md5_ctx);
+	return md5_o;
+}
 
 static void create_list_of_p4_file_from_changelist(struct list_head *plist, const struct depot_change_range_t *prng)
 {
@@ -3085,16 +3158,70 @@ static void create_list_of_p4_file_from_changelist(struct list_head *plist, cons
 						md5_to_hex(&md5));
 			}
 		}
-		list_depot_files_add(plist,
-				str_dict_get_value(&map, "depotFile"),
-				prng->start_changelist,
-				0,
-				p4type2mode(str_dict_get_value(&map, "headType")),
-				md5);
+		if (strstr(str_dict_get_value(&map, "headAction"), "delete") == NULL) {
+			list_depot_files_add(plist,
+					str_dict_get_value(&map, "depotFile"),
+					prng->start_changelist,
+					0,
+					p4type2mode(str_dict_get_value(&map, "headType")),
+					p4type2bintype(str_dict_get_value(&map, "headType")),
+					md5);
+		}
 	}
 	close(child_p4.out);
 	str_dict_destroy(&map);
 	finish_command(&child_p4);
+}
+
+static int get_p4_settings_by_commit(struct hashmap *p4_settings, const char *commit_sha1)
+{
+		struct strbuf sb = STRBUF_INIT;
+		str_dict_reset(p4_settings);
+		extract_log_message(commit_sha1, &sb);
+		extract_p4_settings_git_log(p4_settings, sb.buf);
+		strbuf_release(&sb);
+		if (!str_dict_has(p4_settings, "depot-paths") ||
+				!str_dict_has(p4_settings, "change"))
+			return 1;
+		return 0;
+}
+
+static int p4fsck_by_commit(const char *commit_sha1)
+{
+	int ret_err = 1;
+	struct hashmap p4_settings;
+	LIST_HEAD(cl_depot_files);
+	struct list_head *liter;
+	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
+	str_dict_init(&p4_settings);
+	if (get_p4_settings_by_commit(&p4_settings, commit_sha1) != 0)
+		goto _err;
+	fprintf(stdout, "checking commit: %s p4: %s...@%s\n",
+			commit_sha1,
+			str_dict_get_value(&p4_settings, "depot-paths"),
+			str_dict_get_value(&p4_settings, "change"));
+	strbuf_addstr(&chg_range.depot_path, str_dict_get_value(&p4_settings, "depot-paths"));
+	chg_range.start_changelist = atoi(str_dict_get_value(&p4_settings, "change"));
+	chg_range.end_changelist = chg_range.start_changelist;
+	create_list_of_p4_file_from_changelist(&cl_depot_files, &chg_range);
+	list_for_each(liter, &cl_depot_files) {
+		struct depot_file_t *dp;
+		dp = list_entry(liter, struct depot_file_t, lhead);
+		const char *sub_path = NULL;
+		if (!starts_with(dp->depot_path_file.buf, chg_range.depot_path.buf))
+			continue;
+		sub_path = dp->depot_path_file.buf + chg_range.depot_path.len;
+		struct md5_id git_md5 = compute_md5_from_git(commit_sha1, sub_path, dp->bin_type);
+		if (md5cmp(&dp->hash, &git_md5)) {
+			fprintf(stdout, "%s %s",  md5_to_hex(&dp->hash), sub_path);
+			fprintf(stdout, " Fail (git:%s)\n", md5_to_hex(&git_md5));
+		}
+	}
+_err:
+	list_depot_files_destroy(&cl_depot_files);
+	depot_change_range_destroy(&chg_range);
+	str_dict_destroy(&p4_settings);
+	return ret_err;
 }
 
 static void p4fsck_cmd_run(command_t *pcmd, int argc, const char **argv)
@@ -3102,20 +3229,26 @@ static void p4fsck_cmd_run(command_t *pcmd, int argc, const char **argv)
 	struct option options[] = {
 		OPT_END()
 	};
-	LIST_HEAD(cl_depot_files);
-	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
-	depot_change_range_destroy(&chg_range);
+	struct child_process child_git = CHILD_PROCESS_INIT;
+	struct strbuf sbline = STRBUF_INIT;
+	FILE *fp;
 	argc = parse_options(argc, argv, NULL, options, NULL, 0);
-	if (p4format_patch_parse(argc, argv, &chg_range) != 0) {
-		die("Error parsing changelists");
+	child_git.git_cmd = 1;
+	child_git.out = -1;
+	argv_array_push(&child_git.args, "rev-list");
+	for (;argc; argc--) {
+		argv_array_push(&child_git.args, *argv++);
 	}
-	if (IS_LOG_DEBUG_ALLOWED)
-		print_change_range(p4_verbose_debug.fp, &chg_range);
-	create_list_of_p4_file_from_changelist(&cl_depot_files, &chg_range);
-	if (IS_LOG_DEBUG_ALLOWED)
-		list_depot_files_printf(p4_verbose_debug.fp, &cl_depot_files);
-	list_depot_files_destroy(&cl_depot_files);
-	depot_change_range_destroy(&chg_range);
+	if (start_command(&child_git)) {
+		die("cannot start git rev-list");
+	}
+	fp = xfdopen(child_git.out, "r");
+	while (strbuf_getline(&sbline, fp) == 0) {
+		p4fsck_by_commit(sbline.buf);
+	}
+	fclose(fp);
+	strbuf_release(&sbline);
+
 }
 
 static void p4fsck_cmd_init(struct command_t *pcmd)
