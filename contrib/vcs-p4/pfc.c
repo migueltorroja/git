@@ -13,6 +13,7 @@
 #include "config.h"
 #include "run-command.h"
 #include "utf8.h"
+#include "tempfile.h"
 #include "py-marshal.h"
 #include "strbuf-dict.h"
 #include "md5.h"
@@ -2025,22 +2026,6 @@ struct dump_file_state
 	struct strbuf dirname;
 };
 
-static int mkstemp_unnamed()
-{
-	const char *tmpdir = NULL;
-	int fd = -1;
-	tmpdir = getenv("TMPDIR");
-	if (!tmpdir)
-		tmpdir = "/tmp";
-	struct strbuf tmpname = STRBUF_INIT;
-	strbuf_addf(&tmpname, "%s/gitp4_tmpfile_XXXXXX", tmpdir);
-	fd = mkstemp(tmpname.buf);
-	if (fd >= 0)
-		unlink(tmpname.buf);
-	strbuf_release(&tmpname);
-	return fd;
-}
-
 static void fast_import_blob_fd(int fd_dst, int fd_src)
 {
 	off_t read_remaining = 0;
@@ -2084,9 +2069,9 @@ static void fast_import_blob_p4filedesc(int fd_out, const struct depot_file_t *p
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
-	int fd_tmp = -1;
 	iconv_t icd = NULL;
 	unsigned mode = 0;
+	struct tempfile *temp = NULL;
 	str_dict_init(&map);
 	if (!starts_with(p4f_in->depot_path_file.buf, sb_prefix->buf))
 		goto _leave;
@@ -2102,11 +2087,13 @@ static void fast_import_blob_p4filedesc(int fd_out, const struct depot_file_t *p
 		if (IS_LOG_DEBUG_ALLOWED)
 			str_dict_print(p4_verbose_debug.fp, &map);
 		if (!strcmp(str_dict_get_value(&map, "code"), "stat")) {
-			if (fd_tmp >= 0)
+			if (temp)
 				die("More than one file reported");
 			if (icd)
 				die("icd not NULL");
-			fd_tmp = mkstemp_unnamed();
+			temp = mks_tempfile_t(".p4_blob_XXXXXX");
+			if (!temp)
+				die ("Failed to create temp file");
 			if (!strcmp(str_dict_get_value(&map, "type"), "utf16"))
 				icd = iconv_open("utf16", "utf8");
 			mode = p4type2mode(str_dict_get_value(&map, "type"));
@@ -2116,7 +2103,7 @@ static void fast_import_blob_p4filedesc(int fd_out, const struct depot_file_t *p
 				strcmp(str_dict_get_value(&map, "code"), "binary")) {
 			continue;
 		}
-		if (fd_tmp < 0)
+		if (!temp)
 			continue;
 		kw = str_dict_get_kw(&map, "data");
 		if (!kw) {
@@ -2136,17 +2123,16 @@ static void fast_import_blob_p4filedesc(int fd_out, const struct depot_file_t *p
 			str_dict_put_kw(&map, kw_reencoded);
 			kw = str_dict_get_kw(&map, "data");
 		}
-		if (write_in_full(fd_tmp, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
+		if (write_in_full(temp->fd, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
 	}
 _leave:
-	if (fd_tmp >= 0) {
+	if (temp) {
 		struct strbuf filemodify = STRBUF_INIT;
 		strbuf_addf(&filemodify, "M %06o inline %s\n", mode,
 				p4f_in->depot_path_file.buf + sb_prefix->len);
 		write_str_in_full(fd_out, filemodify.buf);
-		fast_import_blob_fd(fd_out, fd_tmp);
-		close(fd_tmp);
-		fd_tmp = -1;
+		fast_import_blob_fd(fd_out, temp->fd);
+		delete_tempfile(&temp);
 		strbuf_release(&filemodify);
 	}
 	if (icd)
