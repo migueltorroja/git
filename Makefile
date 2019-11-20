@@ -2032,7 +2032,6 @@ ALL_LDFLAGS += $(BASIC_LDFLAGS)
 
 export DIFF TAR INSTALL DESTDIR SHELL_PATH
 
-
 ### Build rules
 
 SHELL = $(SHELL_PATH)
@@ -2058,6 +2057,7 @@ profile-fast: profile-clean
 	$(MAKE) PROFILE=GEN -j1 perf
 	$(MAKE) PROFILE=USE all
 
+include contrib/vcs-p4/config.mak
 
 all:: $(ALL_PROGRAMS) $(SCRIPT_LIB) $(BUILT_INS) $(OTHER_PROGRAMS) GIT-BUILD-OPTIONS
 ifneq (,$X)
@@ -2349,6 +2349,7 @@ OBJECTS := $(LIB_OBJS) $(BUILTIN_OBJS) $(PROGRAM_OBJS) $(TEST_OBJS) \
 ifndef NO_CURL
 	OBJECTS += http.o http-walker.o remote-curl.o
 endif
+	OBJECTS += $(OTHER_OBJECTS)
 
 dep_files := $(foreach f,$(OBJECTS),$(dir $f).depend/$(notdir $f).d)
 dep_dirs := $(addsuffix .depend,$(sort $(dir $(OBJECTS))))
@@ -2371,6 +2372,7 @@ endif
 ASM_SRC := $(wildcard $(OBJECTS:o=S))
 ASM_OBJ := $(ASM_SRC:S=o)
 C_OBJ := $(filter-out $(ASM_OBJ),$(OBJECTS))
+
 
 .SUFFIXES:
 

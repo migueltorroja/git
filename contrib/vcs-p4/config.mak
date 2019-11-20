@@ -1,0 +1,21 @@
+VCSP4_CONTRIB_DIR = contrib/vcs-p4/
+VCSP4LIB_OBJS = $(VCSP4_CONTRIB_DIR)strbuf-dict.o \
+			$(VCSP4_CONTRIB_DIR)py-marshal.o \
+
+MD5LIB_OBJS = $(VCSP4_CONTRIB_DIR)md5.o
+
+OTHER_OBJECTS += $(VCSP4_CONTRIB_DIR)pfc.o \
+			$(VCSP4_CONTRIB_DIR)mddriver.o \
+			$(VCSP4_CONTRIB_DIR)remote-p4.o \
+			$(VCSP4LIB_OBJS) \
+			$(MD5LIB_OBJS)
+
+OTHER_PROGRAMS += $(VCSP4_CONTRIB_DIR)git-pfc$X \
+			$(VCSP4_CONTRIB_DIR)git-remote-p4$X \
+			$(VCSP4_CONTRIB_DIR)test-md5$X \
+
+$(VCSP4_CONTRIB_DIR)git-%$X: $(VCSP4_CONTRIB_DIR)%.o GIT-LDFLAGS $(VCSP4LIB_OBJS) $(GITLIBS) $(MD5LIB_OBJS) $(COMMON_MAIN)
+	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) $(LIBS)
+
+$(VCSP4_CONTRIB_DIR)test-md5$X: $(VCSP4_CONTRIB_DIR)mddriver.o $(MD5LIB_OBJS)
+	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) $(LIBS)

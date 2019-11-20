@@ -48,7 +48,7 @@ static void MDPrint (uint8_t [16]);
    */
 int main (argc, argv)
 	int argc;
-	char *argv[];
+	const char **argv;
 {
 	int i;
 
