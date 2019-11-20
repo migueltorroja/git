@@ -3092,11 +3092,11 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 		const char *file_path, int p4_file_type)
 {
 	struct child_process git_show = CHILD_PROCESS_INIT;
-	MD5_CTX md5_ctx;
+	md5_ctx_t md5_ctx;
 	struct md5_id md5_o;
 	uint8_t buffer[256];
 	ssize_t sz;
-	MD5Init(&md5_ctx);
+	md5_init(&md5_ctx);
 	git_show.out = -1;
 	argv_array_push(&git_show.args, "git");
 	argv_array_push(&git_show.args, "show");
@@ -3113,11 +3113,11 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 			else
 				die("read from git show failed");
 		}
-		MD5Update(&md5_ctx, buffer, sz);
+		md5_update(&md5_ctx, buffer, sz);
 	}
 	close(git_show.out);
 	finish_command(&git_show);
-	MD5Final(md5_o.md5, &md5_ctx);
+	md5_final(md5_o.md5, &md5_ctx);
 	return md5_o;
 }
 

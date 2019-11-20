@@ -27,8 +27,8 @@ typedef struct {
 	uint32_t state[4];                                   /* state (ABCD) */
 	uint32_t count[2];        /* number of bits, modulo 2^64 (lsb first) */
 	uint8_t buffer[64];                         /* input buffer */
-} MD5_CTX;
+} md5_ctx_t;
 
-void MD5Init (MD5_CTX *);
-void MD5Update (MD5_CTX *, uint8_t *, size_t);
-void MD5Final (uint8_t [16], MD5_CTX *);
+void md5_init (md5_ctx_t *);
+void md5_update (md5_ctx_t *, uint8_t *, size_t);
+void md5_final (uint8_t [16], md5_ctx_t *);

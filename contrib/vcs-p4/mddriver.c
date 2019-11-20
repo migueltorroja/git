@@ -32,10 +32,10 @@ static void MDFile (char *);
 static void MDFilter (void);
 static void MDPrint (uint8_t [16]);
 
-#define MD_CTX MD5_CTX
-#define MDInit MD5Init
-#define MDUpdate MD5Update
-#define MDFinal MD5Final
+#define MD_CTX md5_ctx_t
+#define MDInit md5_init
+#define MDUpdate md5_update
+#define MDFinal md5_final
 
 /* Main driver.
 
