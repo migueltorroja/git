@@ -3088,23 +3088,63 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 	str_dict_destroy(&map);
 }
 
+
+/**
+ * Read the contents of a given file descriptor after discarding
+ * any previous data in the strbuf
+ */
+static ssize_t strbuf_overwrite_read(struct strbuf *sb, int fd, size_t hint)
+{
+	strbuf_reset(sb);
+	return strbuf_read(sb, fd, hint);
+}
+
+static void reencode_strbuf_iconv(struct strbuf *out, const struct strbuf *in, iconv_t conv)
+{
+	char *str_out;
+	size_t outsz;
+	strbuf_reset(out);
+	str_out = reencode_string_iconv(in->buf, in->len, conv, 0, &outsz);
+	if (!str_out)
+		die("OOM in reencode_string_iconv");
+	strbuf_add(out, str_out, outsz);
+	free(str_out);
+}
+
 static struct md5_id compute_md5_from_git(const char *commit_sha1,
 		const char *file_path, int p4_file_type)
 {
 	struct child_process git_show = CHILD_PROCESS_INIT;
 	md5_ctx_t md5_ctx;
 	struct md5_id md5_o;
-	uint8_t buffer[256];
+	struct strbuf sb = STRBUF_INIT;
+	struct strbuf sb_reenc = STRBUF_INIT;
 	ssize_t sz;
+	const char *skip_bom = NULL;
+	iconv_t icd = NULL;
 	md5_init(&md5_ctx);
 	git_show.out = -1;
 	argv_array_push(&git_show.args, "git");
 	argv_array_push(&git_show.args, "show");
 	argv_array_pushf(&git_show.args, "%s:%s", commit_sha1, file_path);
+	switch (p4_file_type) {
+	case P4_FORMAT_UTF16_TYPE:
+		LOG_GITP4_INFO("UTF16 file: %s\n", file_path);
+		icd = iconv_open("utf8", "utf16");
+		break;
+	case P4_FORMAT_UTF8_TYPE:
+		LOG_GITP4_INFO("UTF8 file: %s\n", file_path);
+		skip_bom = "\357\273\277";
+		break;
+	default:
+		break;
+	}
 	if (start_command(&git_show)) {
 		die("cannot start git show");
 	}
-	while ((sz = read(git_show.out, buffer, sizeof(buffer))) != 0) {
+	while ((sz = strbuf_overwrite_read(&sb, git_show.out, 0)) != 0) {
+		const char *buf = sb.buf;
+		size_t len = sb.len;
 		if (0 >= sz) {
 			if (EAGAIN == errno)
 				continue;
@@ -3113,11 +3153,35 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 			else
 				die("read from git show failed");
 		}
-		md5_update(&md5_ctx, buffer, sz);
+		while (skip_bom) {
+			if (*skip_bom == '\0') {
+				skip_bom = NULL;
+				break;
+			}
+			if (len == 0)
+				break;
+			if (*skip_bom == *buf) {
+				skip_bom++;
+				buf++;
+				len--;
+			}
+			else
+				skip_bom = NULL;
+		}
+		if (icd) {
+			reencode_strbuf_iconv(&sb_reenc, &sb, icd);
+			buf = sb_reenc.buf;
+			len = sb_reenc.len;
+		}
+		md5_update(&md5_ctx, (uint8_t *)buf, len);
 	}
+	if (icd)
+		iconv_close(icd);
 	close(git_show.out);
 	finish_command(&git_show);
 	md5_final(md5_o.md5, &md5_ctx);
+	strbuf_release(&sb_reenc);
+	strbuf_release(&sb);
 	return md5_o;
 }
 
