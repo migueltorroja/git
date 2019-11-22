@@ -1401,6 +1401,19 @@ static void wildcard_encode(struct strbuf *sb)
 	strbuf_release(&sb_tmp);
 }
 
+static void wildcard_decode(struct strbuf *sb, const char *format)
+{
+	struct strbuf_expand_dict_entry map_table[] = {
+		{ "25", "%"},
+		{ "2A", "*"},
+		{ "2a", "*"},
+		{ "23", "#"},
+		{ "40", "@"},
+		{ NULL, NULL}
+	};
+	strbuf_expand(sb, format, strbuf_expand_dict_cb, map_table);
+}
+
 static int p4_edit(const char *client_dir, const char *path, int auto_type)
 {
 	struct argv_array p4args = ARGV_ARRAY_INIT;
@@ -3112,28 +3125,30 @@ static void reencode_strbuf_iconv(struct strbuf *out, const struct strbuf *in, i
 }
 
 static struct md5_id compute_md5_from_git(const char *commit_sha1,
-		const char *file_path, int p4_file_type)
+		const char *p4_file_path, int p4_file_type)
 {
 	struct child_process git_show = CHILD_PROCESS_INIT;
 	md5_ctx_t md5_ctx;
 	struct md5_id md5_o;
 	struct strbuf sb = STRBUF_INIT;
 	struct strbuf sb_reenc = STRBUF_INIT;
+	struct strbuf sb_git_path = STRBUF_INIT;
 	ssize_t sz;
 	const char *skip_bom = NULL;
+	wildcard_decode(&sb_git_path, p4_file_path);
 	iconv_t icd = NULL;
 	md5_init(&md5_ctx);
 	git_show.out = -1;
 	argv_array_push(&git_show.args, "git");
 	argv_array_push(&git_show.args, "show");
-	argv_array_pushf(&git_show.args, "%s:%s", commit_sha1, file_path);
+	argv_array_pushf(&git_show.args, "%s:%s", commit_sha1, sb_git_path.buf);
 	switch (p4_file_type) {
 	case P4_FORMAT_UTF16_TYPE:
-		LOG_GITP4_INFO("UTF16 file: %s\n", file_path);
+		LOG_GITP4_INFO("UTF16 file: %s\n", sb_git_path.buf);
 		icd = iconv_open("utf8", "utf16");
 		break;
 	case P4_FORMAT_UTF8_TYPE:
-		LOG_GITP4_INFO("UTF8 file: %s\n", file_path);
+		LOG_GITP4_INFO("UTF8 file: %s\n", sb_git_path.buf);
 		skip_bom = "\xEF\xBB\xBF";
 		break;
 	default:
@@ -3188,6 +3203,7 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 	close(git_show.out);
 	finish_command(&git_show);
 	md5_final(md5_o.md5, &md5_ctx);
+	strbuf_release(&sb_git_path);
 	strbuf_release(&sb_reenc);
 	strbuf_release(&sb);
 	return md5_o;
