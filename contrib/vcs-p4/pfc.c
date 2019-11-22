@@ -3175,6 +3175,14 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 		}
 		md5_update(&md5_ctx, (uint8_t *)buf, len);
 	}
+	switch (p4_file_type) {
+	case P4_FORMAT_LINK_TYPE:
+		LOG_GITP4_DEBUG("Appending extra \\n to link \n");
+		md5_update(&md5_ctx, (uint8_t *)"\n", 1);
+		break;
+	default:
+		break;
+	}
 	if (icd)
 		iconv_close(icd);
 	close(git_show.out);
