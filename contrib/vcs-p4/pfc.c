@@ -3134,7 +3134,7 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 		break;
 	case P4_FORMAT_UTF8_TYPE:
 		LOG_GITP4_INFO("UTF8 file: %s\n", file_path);
-		skip_bom = "\357\273\277";
+		skip_bom = "\xEF\xBB\xBF";
 		break;
 	default:
 		break;
