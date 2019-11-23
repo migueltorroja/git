@@ -3106,10 +3106,10 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
  * Read the contents of a given file descriptor after discarding
  * any previous data in the strbuf
  */
-static ssize_t strbuf_overwrite_read(struct strbuf *sb, int fd, size_t hint)
+static ssize_t strbuf_overwrite_read(struct strbuf *sb, FILE *fp, size_t sz)
 {
-	strbuf_reset(sb);
-	return strbuf_read(sb, fd, hint);
+	strbuf_release(sb);
+	return strbuf_fread(sb, sz, fp);
 }
 
 static void reencode_strbuf_iconv(struct strbuf *out, const struct strbuf *in, iconv_t conv)
@@ -3124,42 +3124,48 @@ static void reencode_strbuf_iconv(struct strbuf *out, const struct strbuf *in, i
 	free(str_out);
 }
 
-static struct md5_id compute_md5_from_git(const char *commit_sha1,
-		const char *p4_file_path, int p4_file_type)
+static struct md5_id compute_md5_from_git(FILE *fp, int p4_file_type)
 {
-	struct child_process git_show = CHILD_PROCESS_INIT;
 	md5_ctx_t md5_ctx;
 	struct md5_id md5_o;
 	struct strbuf sb = STRBUF_INIT;
 	struct strbuf sb_reenc = STRBUF_INIT;
-	struct strbuf sb_git_path = STRBUF_INIT;
-	ssize_t sz;
+	struct strbuf sb_line = STRBUF_INIT;
+	uintmax_t sz_remaining = 0;
 	const char *skip_bom = NULL;
-	wildcard_decode(&sb_git_path, p4_file_path);
 	iconv_t icd = NULL;
 	md5_init(&md5_ctx);
-	git_show.out = -1;
-	argv_array_push(&git_show.args, "git");
-	argv_array_push(&git_show.args, "show");
-	argv_array_pushf(&git_show.args, "%s:%s", commit_sha1, sb_git_path.buf);
+	strbuf_getwholeline(&sb_line, fp, '\n');
+	strbuf_trim(&sb_line);
+	struct strbuf **report_first = strbuf_split(&sb_line, ' ');
+	struct strbuf **report_index = report_first;
+	if (!report_first)
+		die("No stats line from cat-file");
+	while(*report_index) {
+		if (2 == (report_index - report_first)) {
+			char *end = (*report_index)->buf + (*report_index)->len;
+			sz_remaining = strtoumax((*report_index)->buf, &end, 10);
+		}
+		report_index++;
+	}
+	LOG_GITP4_INFO("%s\n", sb_line.buf);
+	strbuf_list_free(report_first);
 	switch (p4_file_type) {
 	case P4_FORMAT_UTF16_TYPE:
-		LOG_GITP4_INFO("UTF16 file: %s\n", sb_git_path.buf);
 		icd = iconv_open("utf8", "utf16");
 		break;
 	case P4_FORMAT_UTF8_TYPE:
-		LOG_GITP4_INFO("UTF8 file: %s\n", sb_git_path.buf);
 		skip_bom = "\xEF\xBB\xBF";
 		break;
 	default:
 		break;
 	}
-	if (start_command(&git_show)) {
-		die("cannot start git show");
-	}
-	while ((sz = strbuf_overwrite_read(&sb, git_show.out, 0)) != 0) {
+	while (sz_remaining > 0) {
+		ssize_t sz = strbuf_overwrite_read(&sb, fp, sz_remaining > 8192 ? 8192:sz_remaining);
 		const char *buf = sb.buf;
 		size_t len = sb.len;
+		if (0 == sz)
+			die ("Unexpected EOF");
 		if (0 >= sz) {
 			if (EAGAIN == errno)
 				continue;
@@ -3168,6 +3174,7 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 			else
 				die("read from git show failed");
 		}
+		sz_remaining -= sz;
 		while (skip_bom) {
 			if (*skip_bom == '\0') {
 				skip_bom = NULL;
@@ -3190,6 +3197,8 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 		}
 		md5_update(&md5_ctx, (uint8_t *)buf, len);
 	}
+	assert(sz_remaining == 0);
+	strbuf_getwholeline(&sb_line, fp, '\n');
 	switch (p4_file_type) {
 	case P4_FORMAT_LINK_TYPE:
 		LOG_GITP4_DEBUG("Appending extra \\n to link \n");
@@ -3200,10 +3209,8 @@ static struct md5_id compute_md5_from_git(const char *commit_sha1,
 	}
 	if (icd)
 		iconv_close(icd);
-	close(git_show.out);
-	finish_command(&git_show);
 	md5_final(md5_o.md5, &md5_ctx);
-	strbuf_release(&sb_git_path);
+	strbuf_release(&sb_line);
 	strbuf_release(&sb_reenc);
 	strbuf_release(&sb);
 	return md5_o;
@@ -3260,6 +3267,25 @@ static int get_p4_settings_by_commit(struct hashmap *p4_settings, const char *co
 		return 0;
 }
 
+const char *p4_type_to_str(int p4_type)
+{
+	switch(p4_type) {
+		case P4_FORMAT_TEXT_TYPE:
+			return "text";
+		case P4_FORMAT_BIN_TYPE:
+			return "bin";
+		case P4_FORMAT_UTF8_TYPE:
+			return "utf-8";
+		case P4_FORMAT_UTF16_TYPE:
+			return "utf-16";
+		case P4_FORMAT_LINK_TYPE:
+			return "link";
+		default:
+			break;
+	}
+	return "Unknown";
+}
+
 static int p4fsck_by_commit(const char *commit_sha1)
 {
 	int ret_err = 1;
@@ -3267,6 +3293,8 @@ static int p4fsck_by_commit(const char *commit_sha1)
 	LIST_HEAD(cl_depot_files);
 	struct list_head *liter;
 	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
+	struct child_process git_cat_file = CHILD_PROCESS_INIT;
+	FILE *fp_out;
 	str_dict_init(&p4_settings);
 	if (get_p4_settings_by_commit(&p4_settings, commit_sha1) != 0)
 		goto _err;
@@ -3277,20 +3305,39 @@ static int p4fsck_by_commit(const char *commit_sha1)
 	strbuf_addstr(&chg_range.depot_path, str_dict_get_value(&p4_settings, "depot-paths"));
 	chg_range.start_changelist = atoi(str_dict_get_value(&p4_settings, "change"));
 	chg_range.end_changelist = chg_range.start_changelist;
+	git_cat_file.in = -1;
+	git_cat_file.out = -1;
+	argv_array_push(&git_cat_file.args, "git");
+	argv_array_push(&git_cat_file.args, "cat-file");
+	argv_array_push(&git_cat_file.args, "--batch");
+	if (start_command(&git_cat_file)) {
+		die("cannot start git show");
+	}
+	fp_out = fdopen(git_cat_file.out, "r");
 	create_list_of_p4_file_from_changelist(&cl_depot_files, &chg_range);
 	list_for_each(liter, &cl_depot_files) {
 		struct depot_file_t *dp;
+		struct strbuf sb_git_path = STRBUF_INIT;
 		dp = list_entry(liter, struct depot_file_t, lhead);
 		const char *sub_path = NULL;
 		if (!starts_with(dp->depot_path_file.buf, chg_range.depot_path.buf))
 			continue;
 		sub_path = dp->depot_path_file.buf + chg_range.depot_path.len;
-		struct md5_id git_md5 = compute_md5_from_git(commit_sha1, sub_path, dp->bin_type);
+		strbuf_addf(&sb_git_path, "%s:", commit_sha1);
+		wildcard_decode(&sb_git_path, sub_path);
+		strbuf_addstr(&sb_git_path, "\n");
+		write_in_full(git_cat_file.in, sb_git_path.buf, sb_git_path.len);
+		LOG_GITP4_INFO("%s %s\n", p4_type_to_str(dp->bin_type), sub_path);
+		struct md5_id git_md5 = compute_md5_from_git(fp_out, dp->bin_type);
 		if (md5cmp(&dp->hash, &git_md5)) {
 			fprintf(stdout, "%s %s",  md5_to_hex(&dp->hash), sub_path);
 			fprintf(stdout, " Fail (git:%s)\n", md5_to_hex(&git_md5));
 		}
+		strbuf_release(&sb_git_path);
 	}
+	close(git_cat_file.in);
+	fclose(fp_out);
+	finish_command(&git_cat_file);
 _err:
 	list_depot_files_destroy(&cl_depot_files);
 	depot_change_range_destroy(&chg_range);
