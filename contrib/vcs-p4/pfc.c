@@ -33,12 +33,15 @@ int md5cmp(struct md5_id *a, struct md5_id *b)
 	return memcmp(&a->md5, &b->md5, sizeof(a->md5));
 }
 
-#define P4_FORMAT_UNKNOWN_TYPE (0)
-#define P4_FORMAT_TEXT_TYPE (0)
-#define P4_FORMAT_BIN_TYPE (1)
-#define P4_FORMAT_UTF8_TYPE (2)
-#define P4_FORMAT_UTF16_TYPE (3)
-#define P4_FORMAT_LINK_TYPE (4)
+typedef enum p4_format_types {
+	P4_FORMAT_UNKNOWN_TYPE = 0,
+	P4_FORMAT_TEXT_TYPE,
+	P4_FORMAT_BIN_TYPE,
+	P4_FORMAT_UTF8_TYPE,
+	P4_FORMAT_UTF16_TYPE,
+	P4_FORMAT_LINK_TYPE,
+	P4_FORMAT_MAX_TYPE,
+} p4_format_types_t;
 
 struct depot_file_t
 {
@@ -47,7 +50,7 @@ struct depot_file_t
 	int is_revision;
 	unsigned mode;
 	struct md5_id hash;
-	int bin_type;
+	p4_format_types_t bin_type;
 	struct list_head lhead;
 };
 
@@ -439,20 +442,22 @@ static unsigned p4type2mode(const char *type)
 	return mode;
 }
 
-static int p4type2bintype(const char *type)
+static p4_format_types_t p4type2bintype(const char *type)
 {
 	struct strbuf base = STRBUF_INIT;
 	struct strbuf mods = STRBUF_INIT;
-	int bin_type = P4_FORMAT_UNKNOWN_TYPE;
+	p4_format_types_t bin_type = P4_FORMAT_UNKNOWN_TYPE;
 	p4_normalize_type(type, &base, &mods);
-	if (0 == strcmp(base.buf, "symlink"))
-		bin_type = P4_FORMAT_LINK_TYPE;
+	if (0 == strcmp(base.buf, "text"))
+		bin_type = P4_FORMAT_TEXT_TYPE;
 	else if (0 == strcmp(base.buf, "utf8"))
 		bin_type = P4_FORMAT_UTF8_TYPE;
 	else if (0 == strcmp(base.buf, "utf16"))
 		bin_type = P4_FORMAT_UTF16_TYPE;
 	else if (0 == strcmp(base.buf, "binary"))
 		bin_type = P4_FORMAT_BIN_TYPE;
+	else if (0 == strcmp(base.buf, "symlink"))
+		bin_type = P4_FORMAT_LINK_TYPE;
 	strbuf_release(&mods);
 	strbuf_release(&base);
 	return bin_type;
@@ -2214,7 +2219,7 @@ static void list_depot_files_add(struct list_head *list_depot_files,
 		unsigned int chg_rev,
 		int is_revision,
 		unsigned mode,
-		int bin_type,
+		p4_format_types_t bin_type,
 		struct md5_id md5)
 {
 	struct depot_file_t *df = malloc(sizeof(struct depot_file_t));
@@ -2431,7 +2436,7 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 				unsigned int rev = 0;
 				const char *action = str_dict_get_valuef(&map, "action%s", dp_suffix);
 				unsigned mode;
-				int p4_bin_type;
+				p4_format_types_t p4_bin_type;
 				struct md5_id md5;
 				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
 				mode = p4type2mode(str_dict_get_valuef(&map, "type%s", dp_suffix));
@@ -3124,32 +3129,99 @@ static void reencode_strbuf_iconv(struct strbuf *out, const struct strbuf *in, i
 	free(str_out);
 }
 
-static struct md5_id compute_md5_from_git(FILE *fp, int p4_file_type)
+const char *p4_type_to_str(p4_format_types_t p4_type)
+{
+	switch(p4_type) {
+		case P4_FORMAT_TEXT_TYPE:
+			return "text";
+		case P4_FORMAT_BIN_TYPE:
+			return "bin";
+		case P4_FORMAT_UTF8_TYPE:
+			return "utf-8";
+		case P4_FORMAT_UTF16_TYPE:
+			return "utf-16";
+		case P4_FORMAT_LINK_TYPE:
+			return "link";
+		default:
+			break;
+	}
+	return "Unknown";
+}
+
+
+
+struct git_file_info {
+	p4_format_types_t p4_type;
+	uintmax_t size;
+	struct md5_id md5;
+};
+
+struct git_p4_file_stats{
+	uintmax_t n_files[P4_FORMAT_MAX_TYPE];
+	uint64_t sz_per_type[P4_FORMAT_MAX_TYPE];
+};
+
+static void git_p4_file_stats_init(struct git_p4_file_stats *stats)
+{
+	memset(stats, 0, sizeof(*stats));
+}
+
+static void git_p4_file_stats_add_info(struct git_p4_file_stats *stats,
+		struct git_file_info *f_info)
+{
+	const p4_format_types_t p4_fmt_type = f_info->p4_type;
+	const uintmax_t sz = f_info->size;
+	if (f_info->p4_type >= P4_FORMAT_MAX_TYPE)
+		return;
+	stats->n_files[p4_fmt_type]++;
+	stats->sz_per_type[p4_fmt_type] += sz;
+}
+
+static void fprint_gitp4_stats(FILE *fp, struct git_p4_file_stats *stats)
+{
+	int i;
+	for (i = P4_FORMAT_UNKNOWN_TYPE; i < P4_FORMAT_MAX_TYPE; i++) {
+		fprintf(fp, "total size: %10" PRIu64 "\tnumber_of_files: %8" PRIuMAX "\t%s\n",
+				stats->sz_per_type[i], stats->n_files[i],
+				p4_type_to_str(i));
+	}
+}
+
+static int compute_md5_from_git(FILE *fp, p4_format_types_t p4_file_type, struct git_file_info *finfo)
 {
 	md5_ctx_t md5_ctx;
-	struct md5_id md5_o;
 	struct strbuf sb = STRBUF_INIT;
 	struct strbuf sb_reenc = STRBUF_INIT;
 	struct strbuf sb_line = STRBUF_INIT;
 	uintmax_t sz_remaining = 0;
 	const char *skip_bom = NULL;
+	int res = 0;
 	iconv_t icd = NULL;
 	md5_init(&md5_ctx);
 	strbuf_getwholeline(&sb_line, fp, '\n');
 	strbuf_trim(&sb_line);
 	struct strbuf **report_first = strbuf_split(&sb_line, ' ');
-	struct strbuf **report_index = report_first;
+	struct strbuf **report_end = report_first;
+	while(*report_end)
+		report_end ++;
 	if (!report_first)
 		die("No stats line from cat-file");
-	while(*report_index) {
-		if (2 == (report_index - report_first)) {
-			char *end = (*report_index)->buf + (*report_index)->len;
-			sz_remaining = strtoumax((*report_index)->buf, &end, 10);
-		}
-		report_index++;
+	if ((report_end - report_first) < 3) {
+		res = -1;
+		goto _err;
 	}
+	if (strcmp((*(report_first + 1))->buf, "blob ") != 0) {
+		res = -1;
+		goto _err;
+	}
+	else {
+		struct strbuf *p_sb_size = *(report_first + 2);
+		char *end = p_sb_size->buf + p_sb_size->len;
+		sz_remaining = strtoumax(p_sb_size->buf, &end, 10);
+	}
+	finfo->p4_type = p4_file_type;
+	finfo->size = sz_remaining;
 	LOG_GITP4_INFO("%s\n", sb_line.buf);
-	strbuf_list_free(report_first);
 	switch (p4_file_type) {
 	case P4_FORMAT_UTF16_TYPE:
 		icd = iconv_open("utf8", "utf16");
@@ -3209,17 +3281,21 @@ static struct md5_id compute_md5_from_git(FILE *fp, int p4_file_type)
 	}
 	if (icd)
 		iconv_close(icd);
-	md5_final(md5_o.md5, &md5_ctx);
+	md5_final(finfo->md5.md5, &md5_ctx);
+_err:
+	if (report_first)
+		strbuf_list_free(report_first);
 	strbuf_release(&sb_line);
 	strbuf_release(&sb_reenc);
 	strbuf_release(&sb);
-	return md5_o;
+	return res;
 }
 
-static void create_list_of_p4_file_from_changelist(struct list_head *plist, const struct depot_change_range_t *prng)
+static uintmax_t create_list_of_p4_file_from_changelist(struct list_head *plist, const struct depot_change_range_t *prng)
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
+	uintmax_t n_files = 0;
 	str_dict_init(&map);
 	child_p4.out = -1;
 	argv_array_push(&child_p4.args, "fstat");
@@ -3247,11 +3323,13 @@ static void create_list_of_p4_file_from_changelist(struct list_head *plist, cons
 					p4type2mode(str_dict_get_value(&map, "headType")),
 					p4type2bintype(str_dict_get_value(&map, "headType")),
 					md5);
+			n_files++;
 		}
 	}
 	close(child_p4.out);
 	str_dict_destroy(&map);
 	finish_command(&child_p4);
+	return n_files;
 }
 
 static int get_p4_settings_by_commit(struct hashmap *p4_settings, const char *commit_sha1)
@@ -3267,25 +3345,6 @@ static int get_p4_settings_by_commit(struct hashmap *p4_settings, const char *co
 		return 0;
 }
 
-const char *p4_type_to_str(int p4_type)
-{
-	switch(p4_type) {
-		case P4_FORMAT_TEXT_TYPE:
-			return "text";
-		case P4_FORMAT_BIN_TYPE:
-			return "bin";
-		case P4_FORMAT_UTF8_TYPE:
-			return "utf-8";
-		case P4_FORMAT_UTF16_TYPE:
-			return "utf-16";
-		case P4_FORMAT_LINK_TYPE:
-			return "link";
-		default:
-			break;
-	}
-	return "Unknown";
-}
-
 static int p4fsck_by_commit(const char *commit_sha1)
 {
 	int ret_err = 1;
@@ -3295,6 +3354,8 @@ static int p4fsck_by_commit(const char *commit_sha1)
 	struct depot_change_range_t chg_range = DEPOT_CHANGE_RANGE_INIT;
 	struct child_process git_cat_file = CHILD_PROCESS_INIT;
 	FILE *fp_out;
+	struct git_p4_file_stats git_p4_stats;
+	git_p4_file_stats_init(&git_p4_stats);
 	str_dict_init(&p4_settings);
 	if (get_p4_settings_by_commit(&p4_settings, commit_sha1) != 0)
 		goto _err;
@@ -3314,8 +3375,12 @@ static int p4fsck_by_commit(const char *commit_sha1)
 		die("cannot start git show");
 	}
 	fp_out = fdopen(git_cat_file.out, "r");
-	create_list_of_p4_file_from_changelist(&cl_depot_files, &chg_range);
+	uintmax_t p4_n_files = create_list_of_p4_file_from_changelist(&cl_depot_files, &chg_range);
+	uintmax_t git_n_files = 0;
+	uintmax_t git_n_files_dont_match = 0;
+	fprintf(stdout, "Total Files\n");
 	list_for_each(liter, &cl_depot_files) {
+		struct git_file_info f_info;
 		struct depot_file_t *dp;
 		struct strbuf sb_git_path = STRBUF_INIT;
 		dp = list_entry(liter, struct depot_file_t, lhead);
@@ -3328,13 +3393,24 @@ static int p4fsck_by_commit(const char *commit_sha1)
 		strbuf_addstr(&sb_git_path, "\n");
 		write_in_full(git_cat_file.in, sb_git_path.buf, sb_git_path.len);
 		LOG_GITP4_INFO("%s %s\n", p4_type_to_str(dp->bin_type), sub_path);
-		struct md5_id git_md5 = compute_md5_from_git(fp_out, dp->bin_type);
-		if (md5cmp(&dp->hash, &git_md5)) {
-			fprintf(stdout, "%s %s",  md5_to_hex(&dp->hash), sub_path);
-			fprintf(stdout, " Fail (git:%s)\n", md5_to_hex(&git_md5));
+		if (compute_md5_from_git(fp_out, dp->bin_type, &f_info) != 0) {
+			fprintf(stdout, "\r%s [Missing]\n", sub_path);
 		}
+		else {
+			git_n_files ++;
+			git_p4_file_stats_add_info(&git_p4_stats, &f_info);
+			if (md5cmp(&dp->hash, &f_info.md5)) {
+				fprintf(stdout, "\r%s [KO] p4:%s/git:%s\n", sub_path, md5_to_hex(&dp->hash), md5_to_hex(&f_info.md5));
+				git_n_files_dont_match ++;
+			}
+		}
+		fprintf(stdout, "\rchecked: %10" PRIuMAX "/ total: %10" PRIuMAX,
+				git_n_files, p4_n_files);
 		strbuf_release(&sb_git_path);
 	}
+	fprintf(stdout, "\nTotal checked: %" PRIuMAX " failed %" PRIuMAX "\n",
+			git_n_files, git_n_files_dont_match);
+	fprint_gitp4_stats(stdout, &git_p4_stats);
 	close(git_cat_file.in);
 	fclose(fp_out);
 	finish_command(&git_cat_file);
