@@ -14,9 +14,9 @@
 #include "run-command.h"
 #include "utf8.h"
 #include "tempfile.h"
-#include "py-marshal.h"
-#include "strbuf-dict.h"
-#include "md5.h"
+#include "vcs-p4/py-marshal.h"
+#include "vcs-p4/strbuf-dict.h"
+#include "vcs-p4/md5.h"
 
 
 struct md5_id

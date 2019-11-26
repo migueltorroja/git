@@ -18,7 +18,7 @@
    */
 
 #include "git-compat-util.h"
-#include "md5.h"
+#include "vcs-p4/md5.h"
 
 /* Length of test block, number of test blocks.
 */
@@ -28,7 +28,6 @@
 static void MDString (char *);
 static void MDTimeTrial (void);
 static void MDTestSuite (void);
-static void MDFile (char *);
 static void MDFilter (void);
 static void MDPrint (uint8_t [16]);
 
@@ -46,7 +45,7 @@ static void MDPrint (uint8_t [16]);
    filename - digests file
    (none)   - digests standard input
    */
-int main (argc, argv)
+int cmd_main (argc, argv)
 	int argc;
 	const char **argv;
 {
