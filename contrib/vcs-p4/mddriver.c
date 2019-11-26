@@ -60,8 +60,6 @@ int main (argc, argv)
 				MDTimeTrial ();
 			else if (strcmp (argv[i], "-x") == 0)
 				MDTestSuite ();
-			else
-				MDFile (argv[i]);
 	else
 		MDFilter ();
 
@@ -139,33 +137,6 @@ static void MDTestSuite ()
 	MDString("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
 	MDString("1234567890123456789012345678901234567890"
 		"1234567890123456789012345678901234567890");
-}
-
-/* Digests a file and prints the result.
-*/
-static void MDFile (filename)
-	char *filename;
-{
-	FILE *file;
-	MD_CTX context;
-	size_t len;
-	uint8_t buffer[1024], digest[16];
-
-	if ((file = fopen (filename, "rb")) == NULL)
-		printf ("%s can't be opened\n", filename);
-
-	else {
-		MDInit (&context);
-		while ((len = fread (buffer, 1, 1024, file)))
-			MDUpdate (&context, buffer, len);
-		MDFinal (digest, &context);
-
-		fclose (file);
-
-		printf ("MD5 (%s) = ", filename);
-		MDPrint (digest);
-		printf ("\n");
-	}
 }
 
 /* Digests the standard input and prints the result.

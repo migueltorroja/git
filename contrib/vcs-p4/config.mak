@@ -18,4 +18,4 @@ $(VCSP4_CONTRIB_DIR)git-%$X: $(VCSP4_CONTRIB_DIR)%.o GIT-LDFLAGS $(VCSP4LIB_OBJS
 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) $(LIBS)
 
 $(VCSP4_CONTRIB_DIR)test-md5$X: $(VCSP4_CONTRIB_DIR)mddriver.o $(MD5LIB_OBJS)
-	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) $(LIBS)
+	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^)
