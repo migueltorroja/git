@@ -77,10 +77,6 @@ struct hashmap *py_marshal_parse(struct hashmap *map, int fd)
 			case PY_MARSHAL_TYPE_NULL:
 				assert(NULL == kw);
 				assert(NULL != mapres);
-				if (!str_dict_strcmp(mapres, "code", "error")) {
-					const char *data_str = str_dict_get_value(mapres, "data");
-					fprintf(stderr, "%s", data_str);
-				}
 				return mapres;
 				break;
 			case PY_MARSHAL_TYPE_DICT:
