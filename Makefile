@@ -761,6 +761,7 @@ TEST_PROGRAMS_NEED_X += test-line-buffer
 TEST_PROGRAMS_NEED_X += test-svn-fe
 TEST_PROGRAMS_NEED_X += test-tool
 TEST_PROGRAMS_NEED_X += test-md5
+TEST_PROGRAMS_NEED_X += test-py-marshal
 
 TEST_PROGRAMS = $(patsubst %,t/helper/%$X,$(TEST_PROGRAMS_NEED_X))
 
@@ -2778,6 +2779,7 @@ t/helper/test-line-buffer$X: $(VCSSVN_LIB)
 t/helper/test-svn-fe$X: $(VCSSVN_LIB)
 
 t/helper/test-md5$X: $(VCSP4_LIB)
+t/helper/test-py-marshal$X: $(VCSP4_LIB)
 
 .PRECIOUS: $(TEST_OBJS)
 
