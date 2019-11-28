@@ -149,6 +149,27 @@ _err:
 	return res;
 }
 
+static int basic_strbuf_dict()
+{
+	int res = 1;
+	struct hashmap map;
+	str_dict_init(&map);
+	str_dict_set_key_val(&map, "city", "Paris");
+	if (!str_dict_has(&map, "city"))
+		goto _err;
+	if (!str_dict_get_value(&map, "city"))
+		goto _err;
+	if (strcmp("Paris", str_dict_get_value(&map, "city")) != 0)
+		goto _err;
+	str_dict_reset(&map);
+	if (str_dict_get_value(&map, "city"))
+		goto _err;
+	res = 0;
+_err:
+	str_dict_destroy(&map);
+	return res;
+}
+
 int cmd_main(int argc, const char **argv)
 {
 	if (argc < 2)
@@ -161,6 +182,9 @@ int cmd_main(int argc, const char **argv)
 	}
 	if (strcmp(argv[1], "in_marshal_1") == 0) {
 		return in_marshal_1();
+	}
+	if (strcmp(argv[1], "basic_strbuf_dict") == 0) {
+		return basic_strbuf_dict();
 	}
 	return 1;
 
