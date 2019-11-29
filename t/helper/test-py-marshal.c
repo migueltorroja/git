@@ -188,7 +188,7 @@ static void strbuf_dict_append_from_list(struct hashmap *map, const struct kw_pa
 	}
 }
 
-static int strbuf_dict_append_test()
+static int strbuf_dict_append()
 {
 	struct hashmap map;
 	int res = 1;
@@ -200,6 +200,8 @@ static int strbuf_dict_append_test()
 		goto _err;
 	str_dict_reset(&map);
 	if (hashmap_get_size(&map))
+		goto _err;
+	if (!check_strbuf_dict_values(&map, key_vals_test_1, ARRAY_SIZE(key_vals_test_1)))
 		goto _err;
 	res = 0;
 _err:
