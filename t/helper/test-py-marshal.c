@@ -95,7 +95,7 @@ static int out_marshal(int fd, const struct kw_pair *p_kv, size_t sz)
 	return 0;
 }
 
-static int check_marshal_values(struct hashmap *map, const struct kw_pair *p_kv, size_t sz)
+static int check_strbuf_dict_values(struct hashmap *map, const struct kw_pair *p_kv, size_t sz)
 {
 	const struct kw_pair *p_end = p_kv + sz;
 	struct strbuf intbuf = STRBUF_INIT;
@@ -146,7 +146,7 @@ static int in_marshal_1(void)
 	str_dict_init(&map);
 	if (py_marshal_parse(&map, STDIN_FILENO) == NULL)
 		goto _err;
-	res = check_marshal_values(&map, key_vals_test_1, ARRAY_SIZE(key_vals_test_1));
+	res = check_strbuf_dict_values(&map, key_vals_test_1, ARRAY_SIZE(key_vals_test_1));
 _err:
 	str_dict_destroy(&map);
 	return res;
@@ -173,6 +173,40 @@ _err:
 	return res;
 }
 
+
+static void strbuf_dict_append_from_list(struct hashmap *map, const struct kw_pair *p_kv, size_t sz)
+{
+	const struct kw_pair *p_end = p_kv + sz;
+	for (; p_kv != p_end; p_kv++)
+	{
+		if (p_kv->val_s) {
+			str_dict_set_key_val(map, p_kv->key, p_kv->val_s);
+		}
+		else {
+			str_dict_set_key_valf(map, p_kv->key, "%d", p_kv->val_i);
+		}
+	}
+}
+
+static int strbuf_dict_append_test()
+{
+	struct hashmap map;
+	int res = 1;
+	str_dict_init(&map);
+	strbuf_dict_append_from_list(&map, key_vals_test_1, ARRAY_SIZE(key_vals_test_1));
+	if (check_strbuf_dict_values(&map, key_vals_test_1, ARRAY_SIZE(key_vals_test_1)))
+		goto _err;
+	if (!check_strbuf_dict_values(&map, key_vals_test_2, ARRAY_SIZE(key_vals_test_2)))
+		goto _err;
+	str_dict_reset(&map);
+	if (hashmap_get_size(&map))
+		goto _err;
+	res = 0;
+_err:
+	str_dict_destroy(&map);
+	return res;
+}
+
 int cmd_main(int argc, const char **argv)
 {
 	if (argc < 2)
@@ -188,6 +222,9 @@ int cmd_main(int argc, const char **argv)
 	}
 	if (strcmp(argv[1], "basic_strbuf_dict") == 0) {
 		return basic_strbuf_dict();
+	}
+	if (strcmp(argv[1], "strbuf_dict_append") == 0) {
+		return strbuf_dict_append();
 	}
 	return 1;
 }
