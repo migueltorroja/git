@@ -11,6 +11,12 @@
 #define PY_MARSHAL_TYPE_NULL       '0'
 
 
+struct kw_pair {
+	const char *key;
+	const char *val_s;
+	int32_t     val_i;
+};
+
 static void write_32i_le(struct strbuf *sb, int32_t v)
 {
 	strbuf_addch(sb, (v ) & 0xFF);
@@ -55,35 +61,33 @@ static void py_marshal_add_key_ival(struct strbuf *sb, const char *k, int32_t v)
 	py_marshal_add_int(sb, v);
 }
 
-const struct {
-	const char *key;
-	const char *val;
-} list_of_key_svals[] = {
-	{"user", "John Smith"},
-	{"town", "Springfield"},
+
+const struct kw_pair key_vals_test_1[] = {
+	{"user", "John Smith", 0},
+	{"town", "Springfield", 0},
+	{"ext", NULL, 1234},
+	{"phone", NULL, 55555555},
 };
 
-const struct {
-	const char *key;
-	int32_t val;
-} list_of_key_ivals[] = {
-	{"ext", 1234},
-	{"phone", 55555555},
+const struct kw_pair key_vals_test_2[] = {
+	{"city", "Nashville", 0},
+	{"state", "Tennesse", 0},
+	{"population", 0, 692587},
 };
 
-
-static int out_marshal_1(void)
+static int out_marshal(int fd, const struct kw_pair *p_kv, size_t sz)
 {
 	struct strbuf sb = STRBUF_INIT;
-	size_t sz;
+	const struct kw_pair *p_end = p_kv + sz;
 	py_marshal_gen_start_dict(&sb);
-	for (sz = 0; sz < ARRAY_SIZE(list_of_key_svals); sz++) {
-		py_marshal_add_key_sval(&sb, list_of_key_svals[sz].key,
-				list_of_key_svals[sz].val);
-	}
-	for (sz = 0; sz < ARRAY_SIZE(list_of_key_ivals); sz++) {
-		py_marshal_add_key_ival(&sb, list_of_key_ivals[sz].key,
-				list_of_key_ivals[sz].val);
+	for (; p_kv != p_end; p_kv++)
+	{
+		if (p_kv->val_s)
+			py_marshal_add_key_sval(&sb, p_kv->key,
+					p_kv->val_s);
+		else
+			py_marshal_add_key_ival(&sb, p_kv->key,
+					p_kv->val_i);
 	}
 	py_marshal_gen_stop_dict(&sb);
 	write_in_full(STDOUT_FILENO, sb.buf, sb.len);
@@ -91,60 +95,59 @@ static int out_marshal_1(void)
 	return 0;
 }
 
+static int check_marshal_values(struct hashmap *map, const struct kw_pair *p_kv, size_t sz)
+{
+	const struct kw_pair *p_end = p_kv + sz;
+	struct strbuf intbuf = STRBUF_INIT;
+	int res = 1;
+	for (; p_kv != p_end; p_kv++)
+	{
+		const char *key = p_kv->key;
+		const char *val_parsed = str_dict_get_value(map, key);
+		if (!val_parsed) {
+			fprintf(stderr, "error getting value for key %s\n", key);
+			goto _err;
+		}
+		if (p_kv->val_s) {
+			if (strcmp(p_kv->val_s, val_parsed) != 0) {
+				fprintf(stderr, "error validating key: %s\n", key);
+				goto _err;
+			}
+		}
+		else {
+			strbuf_reset(&intbuf);
+			strbuf_addf(&intbuf, "%d", p_kv->val_i);
+			if (strcmp(intbuf.buf, val_parsed) != 0) {
+				fprintf(stderr, "error validating key: %s\n", key);
+				goto _err;
+			}
+		}
+	}
+	res = 0;
+_err:
+	strbuf_release(&intbuf);
+	return res;
+}
+
+static int out_marshal_1(void)
+{
+	return out_marshal(STDOUT_FILENO, key_vals_test_1, ARRAY_SIZE(key_vals_test_1));
+}
+
 static int out_marshal_2(void)
 {
-	struct strbuf sb = STRBUF_INIT;
-	py_marshal_gen_start_dict(&sb);
-	py_marshal_add_key_sval(&sb, "city", "Nashville");
-	py_marshal_add_key_sval(&sb, "state", "Tennesse");
-	py_marshal_add_key_ival(&sb, "population", 692587);
-	py_marshal_gen_stop_dict(&sb);
-	write_in_full(STDOUT_FILENO, sb.buf, sb.len);
-	strbuf_release(&sb);
-	return 0;
+	return out_marshal(STDOUT_FILENO, key_vals_test_2, ARRAY_SIZE(key_vals_test_2));
 }
 
 static int in_marshal_1(void)
 {
 	int res = 1;
 	struct hashmap map;
-	struct hashmap *pres;
-	size_t i;
-	struct strbuf intbuf = STRBUF_INIT;
 	str_dict_init(&map);
-	pres = py_marshal_parse(&map, STDIN_FILENO);
-	if (!pres)
+	if (py_marshal_parse(&map, STDIN_FILENO) == NULL)
 		goto _err;
-	for (i = 0; i < ARRAY_SIZE(list_of_key_svals); i++) {
-		const char *key = list_of_key_svals[i].key;
-		const char *val_expected = list_of_key_svals[i].val;
-		const char *val_parsed = str_dict_get_value(pres, key);
-		if (!val_parsed) {
-			fprintf(stderr, "error getting value for key %s\n", key);
-			goto _err;
-		}
-		if (strcmp(val_expected, val_parsed) != 0) {
-			fprintf(stderr, "error validating key: %s\n", key);
-			goto _err;
-		}
-	}
-	for (i = 0; i < ARRAY_SIZE(list_of_key_ivals); i++) {
-		strbuf_reset(&intbuf);
-		const char *key = list_of_key_ivals[i].key;
-		const char *val_parsed = str_dict_get_value(pres, key);
-		strbuf_addf(&intbuf, "%d", list_of_key_ivals[i].val);
-		if (!val_parsed) {
-			fprintf(stderr, "error getting value for key %s\n", key);
-			goto _err;
-		}
-		if (strcmp(intbuf.buf, val_parsed) != 0) {
-			fprintf(stderr, "error validating key: %s\n", key);
-			goto _err;
-		}
-	}
-	res = 0;
+	res = check_marshal_values(&map, key_vals_test_1, ARRAY_SIZE(key_vals_test_1));
 _err:
-	strbuf_release(&intbuf);
 	str_dict_destroy(&map);
 	return res;
 }
@@ -187,5 +190,4 @@ int cmd_main(int argc, const char **argv)
 		return basic_strbuf_dict();
 	}
 	return 1;
-
 }
