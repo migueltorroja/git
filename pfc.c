@@ -911,30 +911,17 @@ static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict
 
 int find_upstream_branch_point(int local,struct strbuf *upstream, struct hashmap *p4settings )
 {
-	struct hashmap branch_bydepot_map;
 	struct strbuf parent_commit = STRBUF_INIT;
 	int ret = -1;
-	str_dict_init(&branch_bydepot_map);
-	get_branch_by_depot(local, &branch_bydepot_map);
-	if (IS_LOG_DEBUG_ALLOWED) {
-		LOG_GITP4_DEBUG("Branch depot map: \n");
-		str_dict_print(p4_verbose_debug.fp,&branch_bydepot_map);
-	}
 	if (find_p4_parent_commit(&parent_commit,p4settings) == 0) {
-		const char *upstream_val;
 		const char *depot_path = str_dict_get_value(p4settings,"depot-paths");
 		strbuf_reset(upstream);
-		upstream_val = str_dict_get_value(&branch_bydepot_map,depot_path);
-		if (upstream_val != NULL)
-			strbuf_addstr(upstream, upstream_val);
-		else
-			strbuf_addbuf(upstream, &parent_commit);
+		strbuf_addbuf(upstream, &parent_commit);
 		ret = 0;
 	}
 	else 
 		ret = -1;
 	strbuf_release(&parent_commit);
-	str_dict_destroy(&branch_bydepot_map);
 	return ret;
 }
 
