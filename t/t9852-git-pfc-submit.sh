@@ -27,6 +27,50 @@ output_utf16_text() {
 }
 
 
+output_shopping_list_v1() {
+	printf "Bread\n"
+	printf "Carrots\n"
+	printf "Orange juice\n"
+	printf "Milk\n"
+	printf "Mustard\n"
+	printf "Toothpaste\n"
+	printf "Coffee filters\n"
+}
+
+output_shopping_list_v2() {
+	printf "Bread\n"
+	printf "Carrots\n"
+	printf "Orange juice\n"
+	printf "Milk\n"
+	printf "Eggs\n"
+	printf "Mustard\n"
+	printf "Toothpaste\n"
+	printf "Coffee filters\n"
+}
+
+output_shopping_list_v3() {
+	printf "Bread\n"
+	printf "Carrots\n"
+	printf "Orange juice\n"
+	printf "Milk\n"
+	printf "Mustard\n"
+	printf "Toothpaste\n"
+	printf "Coffee filters\n"
+	printf "Olive oil\n"
+}
+
+output_shopping_list_v4() {
+	printf "Bread\n"
+	printf "Carrots\n"
+	printf "Orange juice\n"
+	printf "Milk\n"
+	printf "Eggs\n"
+	printf "Mustard\n"
+	printf "Toothpaste\n"
+	printf "Coffee filters\n"
+	printf "Olive oil\n"
+}
+
 test_expect_success 'start p4d' '
 	start_p4d
 '
@@ -103,6 +147,83 @@ test_expect_success 'git pfc fsck unicode' '
 		number_of_git_files=`git ls-files | wc -l` &&
 		git pfc fsck HEAD~1..HEAD >git_fsck_result.txt &&
 		grep -e "^Total checked: $number_of_git_files failed 0" git_fsck_result.txt
+	)
+'
+
+test_expect_success 'git pfc shelve' '
+	test_when_finished cleanup_git &&
+	(
+		cd "$cli" &&
+		output_shopping_list_v1 > shopping_list.txt &&
+		p4 add shopping_list.txt && p4 submit -d "shopping list v1"
+	) &&
+	git p4 clone --dest="$git" //depot/@all &&
+	(
+		cd "$git" &&
+		output_shopping_list_v3 > shopping_list.txt &&
+		git add shopping_list.txt && git commit -m "shopping list v3" &&
+		GIT_DIR="$git"/.git git pfc submit && git p4 sync &&
+		git diff p4/master~1..p4/master &&
+		git show p4/master:shopping_list.txt &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt &&
+		git reset --hard p4/master
+	) &&
+	(
+		cd "$git" &&
+		git checkout -b shelve_branch HEAD~1 && output_shopping_list_v2 > shopping_list.txt &&
+		git add shopping_list.txt && git commit -m "shelve shopping list v2" &&
+		GIT_DIR="$git"/.git git pfc shelve && shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		p4 print -q -o shelve_shopping_list_v2.txt //depot/shopping_list.txt@="$shelve_cl" &&
+		test_cmp shelve_shopping_list_v2.txt shopping_list.txt &&
+		git checkout master && git pfc cherry-pick "$shelve_cl" &&
+		output_shopping_list_v4 > shopping_list_v4.txt &&
+		test_cmp shopping_list_v4.txt shopping_list.txt
+	)
+'
+
+test_expect_success 'git pfc submit new file' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		printf "a new file" > new_file.txt &&
+		git add new_file.txt && git commit -m "A new file commit" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_success 'git pfc submit binary' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		printf "\277\277\277\277\000\000\000\000\004\003\275" > file.bin &&
+		git add file.bin && git commit -m "A binary file" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_failure 'git pfc submit change mode' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		printf "#! /bin/sh\n" > exec.sh &&
+		chmod 644 exec.sh &&
+		git add exec.sh && git commit -m "An exec script" &&
+		chmod 755 exec.sh &&
+		git add exec.sh && git commit -m "Set exec flag" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
 	)
 '
 
