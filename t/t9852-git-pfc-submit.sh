@@ -39,7 +39,7 @@ Coffee filters
 EOF
 }
 
-output_shopping_list_v2() {
+output_shopping_list_plus_Eggs() {
 cat << EOF
 Bread
 Carrots
@@ -52,7 +52,7 @@ Coffee filters
 EOF
 }
 
-output_shopping_list_v3() {
+output_shopping_list_plus_Olive_oil() {
 cat << EOF
 Bread
 Carrots
@@ -65,7 +65,7 @@ Olive oil
 EOF
 }
 
-output_shopping_list_v4() {
+output_shopping_list_plus_Eggs_Olive_oil() {
 cat << EOF
 Bread
 Carrots
@@ -182,8 +182,8 @@ test_expect_success 'git pfc shelve' '
 	git p4 clone --dest="$git" //depot/@all &&
 	(
 		cd "$git" &&
-		output_shopping_list_v3 > shopping_list.txt &&
-		git add shopping_list.txt && git commit -m "shopping list v3" &&
+		output_shopping_list_plus_Olive_oil > shopping_list.txt &&
+		git add shopping_list.txt && git commit -m "Adding Olive oil" &&
 		GIT_DIR="$git"/.git git pfc submit && git p4 sync &&
 		git diff p4/master~1..p4/master &&
 		git show p4/master:shopping_list.txt &&
@@ -193,13 +193,13 @@ test_expect_success 'git pfc shelve' '
 	) &&
 	(
 		cd "$git" &&
-		git checkout -b shelve_branch HEAD~1 && output_shopping_list_v2 > shopping_list.txt &&
-		git add shopping_list.txt && git commit -m "shelve shopping list v2" &&
+		git checkout -b shelve_branch HEAD~1 && output_shopping_list_plus_Eggs > shopping_list.txt &&
+		git add shopping_list.txt && git commit -m "Adding Eggs" &&
 		GIT_DIR="$git"/.git git pfc shelve && shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
 		p4 print -q -o shelve_shopping_list_v2.txt //depot/shopping_list.txt@="$shelve_cl" &&
 		test_cmp shelve_shopping_list_v2.txt shopping_list.txt &&
 		git checkout master && git pfc cherry-pick "$shelve_cl" &&
-		output_shopping_list_v4 > shopping_list_v4.txt &&
+		output_shopping_list_plus_Eggs_Olive_oil > shopping_list_v4.txt &&
 		test_cmp shopping_list_v4.txt shopping_list.txt
 	)
 '
@@ -281,6 +281,49 @@ test_expect_failure 'git pfc submit change mode' '
 		git add script.sh && git commit -m "A script" &&
 		chmod 755 script.sh &&
 		git add script.sh && git commit -m "Set exec flag" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_success 'git pfc submit deleted file' '
+	(
+		cd "$cli" &&
+		printf "File about to be deleted" >temporal_file.txt &&
+		p4 add temporal_file.txt &&
+		p4 submit -d "Temporal file"
+	)&&
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		git rm temporal_file.txt &&
+		git commit -m "Short is the life of a temporal file" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_success 'git pfc submit readd file' '
+	(
+		cd "$cli" &&
+		printf "File about to be deleted" >temporal_file_1.txt &&
+		p4 add temporal_file_1.txt &&
+		p4 submit -d "Temporal file"
+	)&&
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		git rm temporal_file_1.txt &&
+		git commit -m "Short is the life of a temporal file" &&
+		printf "A not so temporal file" >temporal_file_1.txt &&
+		git add temporal_file_1.txt &&
+		git commit -m "Readding temporal file" &&
 		GIT_DIR="$git"/.git git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
