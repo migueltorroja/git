@@ -26,7 +26,6 @@ output_utf16_text() {
 	output_utf8_text | iconv -f UTF-8 -t UTF-16
 }
 
-
 output_shopping_list_v1() {
 cat << EOF
 Bread
@@ -77,6 +76,11 @@ Toothpaste
 Coffee filters
 Olive oil
 EOF
+}
+
+
+extract_changelist_from_commit() {
+	git log -1 $1 | sed -ne 's/.*git-p4.*change = \([0-9]\+\)[^0-9]/\1/p'
 }
 
 test_expect_success 'start p4d' '
@@ -172,6 +176,36 @@ test_expect_success 'git pfc fsck unicode' '
 	)
 '
 
+test_expect_failure 'git pfc cherry-pick' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git && (
+		cd "$cli"
+		mkdir dir1 &&
+		printf "file1" > dir1/file.txt &&
+		printf "#! /bin/sh\n" > dir1/run.sh &&
+		chmod 755 dir1/run.sh &&
+		printf "int main (int argc, char **argv) { return 0;}" > dir1/main.c &&
+		mkdir quijote &&
+		output_utf8_text > quijote/chapter1.txt &&
+		p4 add -t utf8 quijote/chapter1.txt &&
+		p4 add dir1/file.txt dir1/run.sh dir1/main.c &&
+		p4 submit -d "a miscellaneous set of files" &&
+		p4 delete quijote/chapter1.txt &&
+		p4 submit -d "deleting a file"
+	) &&
+	(
+		cd "$git" &&
+		git p4 sync &&
+		last_cl=`extract_changelist_from_commit p4/master` &&
+		prev_cl=`extract_changelist_from_commit p4/master~1` &&
+		git pfc cherry-pick //depot/ "$prev_cl" &&
+		git pfc cherry-pick //depot/ "$last_cl" &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt &&
+		git reset --hard p4/master
+	)
+
+'
 test_expect_success 'git pfc shelve' '
 	test_when_finished cleanup_git &&
 	(
@@ -203,6 +237,7 @@ test_expect_success 'git pfc shelve' '
 		test_cmp shopping_list_v4.txt shopping_list.txt
 	)
 '
+
 
 test_expect_success 'git pfc submit new file' '
 	git p4 clone --dest="$git" //depot/@all &&
@@ -330,6 +365,19 @@ test_expect_success 'git pfc submit readd file' '
 		test_line_count = 0 diff.txt
 	)
 '
+
+test_expect_failure 'git pfc fetch' '
+	git p4 clone --dest="$git" --max-changes=1 //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		git pfc fetch &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
 
 test_done
 
