@@ -233,16 +233,31 @@ test_expect_success 'git pfc submit binary' '
 	)
 '
 
-test_expect_failure 'git pfc submit change mode' '
+test_expect_failure 'git pfc submit new file with exec flag' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
 		printf "#! /bin/sh\n" > exec.sh &&
-		chmod 644 exec.sh &&
-		git add exec.sh && git commit -m "An exec script" &&
 		chmod 755 exec.sh &&
-		git add exec.sh && git commit -m "Set exec flag" &&
+		git add exec.sh && git commit -m "An exec script" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_failure 'git pfc submit change mode' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		printf "#! /bin/sh\n\necho Hello\n" > script.sh &&
+		chmod 644 script.sh &&
+		git add script.sh && git commit -m "A script" &&
+		chmod 755 script.sh &&
+		git add script.sh && git commit -m "Set exec flag" &&
 		GIT_DIR="$git"/.git git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
