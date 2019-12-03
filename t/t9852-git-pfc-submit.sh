@@ -218,6 +218,18 @@ test_expect_success 'git pfc submit new file' '
 	)
 '
 
+test_expect_failure 'git pfc new file twice' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		printf "a new file" > new_file_1.txt &&
+		git add new_file_1.txt && git commit -m "A new file 1 commit" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		test_must_fail git --git-dir="$git"/.git pfc submit
+	)
+'
+
 test_expect_success 'git pfc submit binary' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
@@ -226,6 +238,17 @@ test_expect_success 'git pfc submit binary' '
 		printf "\377\277\277\277\000\000\000\000" > file.bin &&
 		printf "\004\003\275\242\262\033\344\300" >> file.bin &&
 		git add file.bin && git commit -m "A binary file" &&
+		GIT_DIR="$git"/.git git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	) &&
+	(
+		cd "$git" &&
+		git reset --hard p4/master &&
+		printf "\377\277\277\277\000\000\000\000" >> file.bin &&
+		printf "\004\003\275\242\262\033\344\300" >> file.bin &&
+		git add file.bin && git commit -m "A bigger binary file" &&
 		GIT_DIR="$git"/.git git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
