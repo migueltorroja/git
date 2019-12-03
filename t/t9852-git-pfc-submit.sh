@@ -28,47 +28,55 @@ output_utf16_text() {
 
 
 output_shopping_list_v1() {
-	printf "Bread\n"
-	printf "Carrots\n"
-	printf "Orange juice\n"
-	printf "Milk\n"
-	printf "Mustard\n"
-	printf "Toothpaste\n"
-	printf "Coffee filters\n"
+cat << EOF
+Bread
+Carrots
+Orange juice
+Milk
+Mustard
+Toothpaste
+Coffee filters
+EOF
 }
 
 output_shopping_list_v2() {
-	printf "Bread\n"
-	printf "Carrots\n"
-	printf "Orange juice\n"
-	printf "Milk\n"
-	printf "Eggs\n"
-	printf "Mustard\n"
-	printf "Toothpaste\n"
-	printf "Coffee filters\n"
+cat << EOF
+Bread
+Carrots
+Orange juice
+Milk
+Eggs
+Mustard
+Toothpaste
+Coffee filters
+EOF
 }
 
 output_shopping_list_v3() {
-	printf "Bread\n"
-	printf "Carrots\n"
-	printf "Orange juice\n"
-	printf "Milk\n"
-	printf "Mustard\n"
-	printf "Toothpaste\n"
-	printf "Coffee filters\n"
-	printf "Olive oil\n"
+cat << EOF
+Bread
+Carrots
+Orange juice
+Milk
+Mustard
+Toothpaste
+Coffee filters
+Olive oil
+EOF
 }
 
 output_shopping_list_v4() {
-	printf "Bread\n"
-	printf "Carrots\n"
-	printf "Orange juice\n"
-	printf "Milk\n"
-	printf "Eggs\n"
-	printf "Mustard\n"
-	printf "Toothpaste\n"
-	printf "Coffee filters\n"
-	printf "Olive oil\n"
+cat << EOF
+Bread
+Carrots
+Orange juice
+Milk
+Eggs
+Mustard
+Toothpaste
+Coffee filters
+Olive oil
+EOF
 }
 
 test_expect_success 'start p4d' '
