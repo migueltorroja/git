@@ -176,7 +176,7 @@ test_expect_success 'git pfc fsck unicode' '
 	)
 '
 
-test_expect_failure 'git pfc cherry-pick' '
+test_expect_success 'git pfc cherry-pick' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git && (
 		cd "$cli"
