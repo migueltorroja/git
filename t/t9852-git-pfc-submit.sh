@@ -201,7 +201,8 @@ test_expect_success 'git pfc submit binary' '
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
-		printf "\277\277\277\277\000\000\000\000\004\003\275" > file.bin &&
+		printf "\377\277\277\277\000\000\000\000" > file.bin &&
+		printf "\004\003\275\242\262\033\344\300" >> file.bin &&
 		git add file.bin && git commit -m "A binary file" &&
 		GIT_DIR="$git"/.git git pfc submit &&
 		git p4 sync &&
