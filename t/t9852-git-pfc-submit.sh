@@ -92,12 +92,26 @@ test_expect_success 'basic git pfc submit' '
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
-		git update-ref -d refs/remotes/p4/HEAD &&
-		git update-ref -d refs/remotes/p4/master &&
-		echo "All work and no play makes Jack a dull boy" > chapter1.txt &&
+		printf "All work and no play makes Jack a dull boy\n" > chapter1.txt &&
 		git add chapter1.txt &&
 		git commit -m "Shiny commit" &&
 		GIT_DIR="$git/.git" git pfc submit &&
+		git update-ref refs/remotes/p4/master HEAD~1 &&
+		git p4 sync &&
+		git diff HEAD..p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_failure 'basic git pfc submit (no git dir)' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		printf "All work and no play makes Jack a dull boy\n" >> chapter1.txt &&
+		git add chapter1.txt &&
+		git commit -m "A little bit more scary" &&
+		git pfc submit &&
 		git update-ref refs/remotes/p4/master HEAD~1 &&
 		git p4 sync &&
 		git diff HEAD..p4/master >diff.txt &&
