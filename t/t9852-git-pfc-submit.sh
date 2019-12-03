@@ -366,13 +366,14 @@ test_expect_success 'git pfc submit readd file' '
 	)
 '
 
-test_expect_failure 'git pfc fetch' '
-	git p4 clone --dest="$git" --max-changes=1 //depot/@all &&
+test_expect_success 'git pfc fetch' '
+	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
+		first_commit=`git rev-list --reverse p4/master | sed -ne "1,1p"` &&
+		git update-ref refs/remotes/p4/master "$first_commit" &&
 		git pfc fetch &&
-		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
 	)

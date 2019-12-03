@@ -3019,6 +3019,21 @@ void p4discover_branches_cmd_init(struct command_t *pcmd)
 	pcmd->data = 0;
 }
 
+
+static void p4fetch_fast_import(struct list_head *l, const char *ref)
+{
+	struct child_process git_fast_import = CHILD_PROCESS_INIT;
+	argv_array_push(&git_fast_import.args, "git");
+	argv_array_push(&git_fast_import.args, "fast-import");
+	git_fast_import.in = -1;
+	if (start_command(&git_fast_import)) {
+		die("cannot start git fast-import");
+	}
+	p4export_list_changes(git_fast_import.in, l, ref);
+	close(git_fast_import.in);
+	finish_command(&git_fast_import);
+}
+
 static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
 #if 0
@@ -3090,7 +3105,7 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 		}
 		finish_command(&child_p4);
 		strbuf_addf(&git_reference, "refs/remotes/p4/%s", kw->key.buf);
-		p4export_list_changes(STDOUT_FILENO, &list_of_changes, git_reference.buf);
+		p4fetch_fast_import(&list_of_changes, git_reference.buf);
 		strbuf_release(&git_reference);
 		list_depot_changelist_desc_destroy(&list_of_changes);
 		str_dict_destroy(&p4_change);
