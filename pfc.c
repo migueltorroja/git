@@ -143,6 +143,8 @@ static int get_md5_hex(const char *str, struct md5_id *pmd5)
 {
 	int i;
 	uint8_t *pindx = &pmd5->md5[0];
+	if (!str)
+		return -1;
 	for (i = 0; i < ARRAY_SIZE(pmd5->md5); i++) {
 		if (!*str || !*(str + 1))
 			return -1;
@@ -2428,7 +2430,11 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 				rev = p4revtoi(str_dict_get_valuef(&map, "rev%s", dp_suffix));
 				mode = p4type2mode(str_dict_get_valuef(&map, "type%s", dp_suffix));
 				p4_bin_type = p4type2bintype(str_dict_get_valuef(&map, "type%s", dp_suffix));
-				get_md5_hex(str_dict_get_valuef(&map, "digest%s", dp_suffix), &md5);
+				const char *digest_md5 = str_dict_get_valuef(&map, "digest%s", dp_suffix);
+				if (digest_md5)
+					get_md5_hex(digest_md5, &md5);
+				else
+					md5 = null_md5;
 				if (IS_LOG_DEBUG_ALLOWED) {
 					fprintf(p4_verbose_debug.fp, "%s#%d (%06o) %s\n",
 							kw->val.buf,
@@ -2439,13 +2445,13 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 				}
 				if (is_shelved) {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, p4_bin_type, null_md5);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, p4_bin_type, md5);
 					else
 						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, p4_bin_type, md5);
 				}
 				else {
 					if (strcmp(action, "delete"))
-						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, P4_FORMAT_UNKNOWN_TYPE, null_md5);
+						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, P4_FORMAT_UNKNOWN_TYPE, md5);
 					else
 						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, p4_bin_type, md5);
 					if (rev)
@@ -2526,6 +2532,7 @@ static void p4export_apply_file_changes(int fd_out, struct depot_changelist_desc
 			continue;
 		const char *dp_suffix = df->depot_path_file.buf + dp_sb->len;
 		strbuf_addf(&sb_del, "D %s\n", dp_suffix);
+		write_str_in_full(fd_out, sb_del.buf);
 		strbuf_release(&sb_del);
 	}
 	list_for_each(pos, &pchange->list_of_modified_files) {
