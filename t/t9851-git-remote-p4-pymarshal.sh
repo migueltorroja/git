@@ -13,4 +13,8 @@ test_expect_success 'basic strbuf dict' '
 	test-py-marshal basic_strbuf_dict
 '
 
+test_expect_success 'copy strbuf dict' '
+	test-py-marshal copy_long_strbuf_dict
+'
+
 test_done

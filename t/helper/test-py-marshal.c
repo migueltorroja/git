@@ -209,6 +209,48 @@ _err:
 	return res;
 }
 
+static int copy_long_strbuf_dict()
+{
+	struct hashmap src;
+	struct hashmap dst;
+	struct strbuf key = STRBUF_INIT;
+	struct strbuf val = STRBUF_INIT;
+	int res = 1;
+	int i;
+	str_dict_init(&src);
+	str_dict_init(&dst);
+	for (i = 0; i < 1000; i++) {
+		strbuf_reset(&key);
+		strbuf_addf(&key, "key%d", i);
+		str_dict_set_key_valf(&src, key.buf, "val%d", i+100);
+	}
+	if (hashmap_get_size(&src) != 1000)
+		goto _err;
+	str_dict_copy(&dst, &src);
+	if (hashmap_get_size(&dst) != 1000)
+		goto _err;
+	for (i = 0; i < 1000; i ++) {
+		strbuf_reset(&key);
+		strbuf_addf(&key, "key%d", i);
+		if (str_dict_get_kw(&src, key.buf) ==
+				str_dict_get_kw(&dst, key.buf))
+			goto _err;
+		if (!str_dict_has(&dst, key.buf))
+			goto _err;
+		strbuf_reset(&val);
+		strbuf_addf(&val, "val%d", i + 100);
+		if (str_dict_strcmp(&dst, key.buf, val.buf) != 0)
+			goto _err;
+	}
+	res = 0;
+_err:
+	str_dict_destroy(&dst);
+	str_dict_destroy(&src);
+	strbuf_release(&key);
+	strbuf_release(&val);
+	return res;
+}
+
 int cmd_main(int argc, const char **argv)
 {
 	if (argc < 2)
@@ -227,6 +269,9 @@ int cmd_main(int argc, const char **argv)
 	}
 	if (strcmp(argv[1], "strbuf_dict_append") == 0) {
 		return strbuf_dict_append();
+	}
+	if (strcmp(argv[1], "copy_long_strbuf_dict") == 0) {
+		return copy_long_strbuf_dict();
 	}
 	return 1;
 }
