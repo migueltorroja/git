@@ -107,22 +107,6 @@ test_expect_success 'basic git pfc submit' '
 		printf "All work and no play makes Jack a dull boy\n" > chapter1.txt &&
 		git add chapter1.txt &&
 		git commit -m "Shiny commit" &&
-		GIT_DIR="$git/.git" git pfc submit &&
-		git update-ref refs/remotes/p4/master HEAD~1 &&
-		git p4 sync &&
-		git diff HEAD..p4/master >diff.txt &&
-		test_line_count = 0 diff.txt
-	)
-'
-
-test_expect_failure 'basic git pfc submit (no git dir)' '
-	git p4 clone --dest="$git" //depot/@all &&
-	test_when_finished cleanup_git &&
-	(
-		cd "$git" &&
-		printf "All work and no play makes Jack a dull boy\n" >> chapter1.txt &&
-		git add chapter1.txt &&
-		git commit -m "A little bit more scary" &&
 		git pfc submit &&
 		git update-ref refs/remotes/p4/master HEAD~1 &&
 		git p4 sync &&
@@ -218,7 +202,7 @@ test_expect_success 'git pfc shelve' '
 		cd "$git" &&
 		output_shopping_list_plus_Olive_oil > shopping_list.txt &&
 		git add shopping_list.txt && git commit -m "Adding Olive oil" &&
-		GIT_DIR="$git"/.git git pfc submit && git p4 sync &&
+		git pfc submit && git p4 sync &&
 		git diff p4/master~1..p4/master &&
 		git show p4/master:shopping_list.txt &&
 		git diff HEAD p4/master >diff.txt &&
@@ -229,7 +213,7 @@ test_expect_success 'git pfc shelve' '
 		cd "$git" &&
 		git checkout -b shelve_branch HEAD~1 && output_shopping_list_plus_Eggs > shopping_list.txt &&
 		git add shopping_list.txt && git commit -m "Adding Eggs" &&
-		GIT_DIR="$git"/.git git pfc shelve && shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		git pfc shelve && shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
 		p4 print -q -o shelve_shopping_list_v2.txt //depot/shopping_list.txt@="$shelve_cl" &&
 		test_cmp shelve_shopping_list_v2.txt shopping_list.txt &&
 		git checkout master && git pfc cherry-pick "$shelve_cl" &&
@@ -246,7 +230,7 @@ test_expect_success 'git pfc shelve add' '
 		output_shopping_list_v1 > shopping_list_to_be_shelved.txt &&
 		git add shopping_list_to_be_shelved.txt &&
 		git commit -m "A new file to be shelved" &&
-		git --git-dir="$git"/.git pfc shelve &&
+		git pfc shelve &&
 		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
 		p4 print -q -o shopping_list_shelved.txt //depot/shopping_list_to_be_shelved.txt@="$shelve_cl" &&
 		test_cmp shopping_list_shelved.txt shopping_list_to_be_shelved.txt
@@ -261,7 +245,7 @@ test_expect_success 'git pfc cherry-pick a shelve with a deleted file' '
 		git checkout -b shelve_branch &&
 		git rm file1 &&
 		git commit -m "A deleted file in a shelve " &&
-		git --git-dir="$git"/.git pfc shelve &&
+		git pfc shelve &&
 		git checkout master &&
 		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
 		git pfc cherry-pick "$shelve_cl" &&
@@ -279,7 +263,7 @@ test_expect_success 'git pfc shelve add file in a new dir' '
 		output_shopping_list_v1 > shelve/shopping_list.txt &&
 		git add shelve/shopping_list.txt &&
 		git commit -m "A new file to be shelved" &&
-		git --git-dir="$git"/.git pfc shelve &&
+		git pfc shelve &&
 		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
 		p4 print -q -o shelve/shopping_list_shelve.txt //depot/shelve/shopping_list.txt@="$shelve_cl" &&
 		test_cmp shelve/shopping_list_shelve.txt shelve/shopping_list.txt
@@ -296,7 +280,7 @@ test_expect_success 'git pfc shelve add file and format-patch' '
 		output_shopping_list_v1 > shelve/shopping_list.txt &&
 		git add shelve/shopping_list.txt &&
 		git commit -m "A new file to be shelved" &&
-		git --git-dir="$git"/.git pfc shelve &&
+		git pfc shelve &&
 		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
 		git checkout master &&
 		git pfc format-patch "$shelve_cl" &&
@@ -314,7 +298,7 @@ test_expect_success 'git pfc submit new file' '
 		cd "$git" &&
 		printf "a new file" > new_file.txt &&
 		git add new_file.txt && git commit -m "A new file commit" &&
-		GIT_DIR="$git"/.git git pfc submit &&
+		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
@@ -328,8 +312,8 @@ test_expect_failure 'git pfc new file twice' '
 		cd "$git" &&
 		printf "a new file" > new_file_1.txt &&
 		git add new_file_1.txt && git commit -m "A new file 1 commit" &&
-		GIT_DIR="$git"/.git git pfc submit &&
-		test_must_fail git --git-dir="$git"/.git pfc submit
+		git pfc submit &&
+		test_must_fail git pfc submit
 	)
 '
 
@@ -341,7 +325,7 @@ test_expect_success 'git pfc submit binary' '
 		printf "\377\277\277\277\000\000\000\000" > file.bin &&
 		printf "\004\003\275\242\262\033\344\300" >> file.bin &&
 		git add file.bin && git commit -m "A binary file" &&
-		GIT_DIR="$git"/.git git pfc submit &&
+		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
@@ -352,7 +336,7 @@ test_expect_success 'git pfc submit binary' '
 		printf "\377\277\277\277\000\000\000\000" >> file.bin &&
 		printf "\004\003\275\242\262\033\344\300" >> file.bin &&
 		git add file.bin && git commit -m "A bigger binary file" &&
-		GIT_DIR="$git"/.git git pfc submit &&
+		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
@@ -367,7 +351,7 @@ test_expect_failure 'git pfc submit new file with exec flag' '
 		printf "#! /bin/sh\n" > exec.sh &&
 		chmod 755 exec.sh &&
 		git add exec.sh && git commit -m "An exec script" &&
-		GIT_DIR="$git"/.git git pfc submit &&
+		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
@@ -384,7 +368,7 @@ test_expect_failure 'git pfc submit change mode' '
 		git add script.sh && git commit -m "A script" &&
 		chmod 755 script.sh &&
 		git add script.sh && git commit -m "Set exec flag" &&
-		GIT_DIR="$git"/.git git pfc submit &&
+		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
@@ -404,7 +388,7 @@ test_expect_success 'git pfc submit deleted file' '
 		cd "$git" &&
 		git rm temporal_file.txt &&
 		git commit -m "Short is the life of a temporal file" &&
-		GIT_DIR="$git"/.git git pfc submit &&
+		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
@@ -427,7 +411,7 @@ test_expect_success 'git pfc submit readd file' '
 		printf "A not so temporal file" >temporal_file_1.txt &&
 		git add temporal_file_1.txt &&
 		git commit -m "Readding temporal file" &&
-		GIT_DIR="$git"/.git git pfc submit &&
+		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt

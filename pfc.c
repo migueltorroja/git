@@ -971,9 +971,9 @@ static int git_apply_commit(const char *commit_id, const char *dir, int check_on
 	}
 	child_apply.git_cmd=1;
 	child_apply.in=child_diff_tree.out;
-	argv_array_push(&child_apply.args, "apply");
-	argv_array_push(&child_apply.args, "--ignore-whitespace");
-	argv_array_push(&child_apply.args, "--check");
+	argv_array_pushl(&child_apply.args,
+			"--git-dir", absolute_path(get_git_dir()),
+			"apply", "--ignore-whitespace", "--check", NULL);
 	if (!check_only)
 		argv_array_push(&child_apply.args, "--apply");
 	if (dir)
