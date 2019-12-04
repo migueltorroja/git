@@ -18,6 +18,9 @@ void keyval_append_key_f(keyval_t *kw, int fd, size_t n);
 void keyval_append_val_f(keyval_t *kw, int fd, size_t n);
 
 void str_dict_init(struct hashmap *map);
+static inline keyval_t *str_dict_iter_next(struct hashmap_iter *hm_iter) {
+	return container_of_or_null(hashmap_iter_next(hm_iter), keyval_t, ent);
+}
 void str_dict_destroy(struct hashmap *map);
 void str_dict_reset(struct hashmap *map);
 void str_dict_put_kw(struct hashmap *map, keyval_t *kw);

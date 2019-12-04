@@ -94,10 +94,10 @@ void str_dict_init(struct hashmap *map)
 void str_dict_destroy(struct hashmap *map)
 {
 	struct hashmap_iter hm_iter;
-	struct hashmap_entry *hm_elem;
+	struct keyval_t *kv;
 	hashmap_iter_init(map, &hm_iter);
-	while ((hm_elem = hashmap_iter_next(&hm_iter)))
-		keyval_release(container_of(hm_elem, keyval_t, ent));
+	while ((kv = str_dict_iter_next(&hm_iter)))
+		keyval_release(kv);
 	hashmap_free(map);
 }
 
@@ -170,17 +170,11 @@ void str_dict_print(FILE *fp, struct hashmap *map)
 	{
 		fprintf(fp,"{");
 		struct hashmap_iter hm_iter;
-		struct hashmap_entry *entry;
+		struct keyval_t *kv;
 		hashmap_iter_init(map, &hm_iter);
-		entry = hashmap_iter_next(&hm_iter);
-		assert(NULL != entry);
-		for (;;) {
-			keyval_print(fp, container_of(entry, keyval_t, ent));
-			entry = hashmap_iter_next(&hm_iter);
-			if (entry)
-				fprintf(fp,", ");
-			else
-				break;
+		while ((kv = str_dict_iter_next(&hm_iter))) {
+			keyval_print(fp, kv);
+			fprintf(fp,", ");
 		}
 		fprintf(fp,"}\n");
 	}
@@ -196,11 +190,11 @@ void str_dict_copy_kw(struct hashmap *dst, const keyval_t *kw)
 void str_dict_copy(struct hashmap *dst, struct hashmap *src)
 {
 	str_dict_reset(dst);
-	struct hashmap_entry *entry;
+	struct keyval_t *kv;
 	struct hashmap_iter hm_iter;
 	hashmap_iter_init(src, &hm_iter);
-	while ((entry = hashmap_iter_next(&hm_iter))) {
-		str_dict_copy_kw(dst, container_of(entry, keyval_t, ent));
+	while ((kv = str_dict_iter_next(&hm_iter))) {
+		str_dict_copy_kw(dst, kv);
 	}
 }
 
