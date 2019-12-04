@@ -25,7 +25,7 @@
 #define TEST_BLOCK_LEN 1000
 #define TEST_BLOCK_COUNT 1000
 
-static void MDString (char *);
+static void MDString (const char *);
 static void MDTestSuite (void);
 static void MDFilter (void);
 static void MDPrint (uint8_t [16]);
@@ -67,7 +67,7 @@ int cmd_main (argc, argv)
 /* Digests a string and prints the result.
 */
 static void MDString (string)
-	char *string;
+	const char *string;
 {
 	MD_CTX context;
 	uint8_t digest[16];
@@ -80,45 +80,6 @@ static void MDString (string)
 	printf ("MD5 (\"%s\") = ", string);
 	MDPrint (digest);
 	printf ("\n");
-}
-
-/* Measures the time to digest TEST_BLOCK_COUNT TEST_BLOCK_LEN-byte
-   blocks.
-   */
-static void MDTimeTrial ()
-{
-	MD_CTX context;
-	time_t endTime, startTime;
-	uint8_t block[TEST_BLOCK_LEN], digest[16];
-	size_t i;
-
-	printf
-		("MD5 time trial. Digesting %d %d-byte blocks ...",
-		 TEST_BLOCK_LEN, TEST_BLOCK_COUNT);
-
-	/* Initialize block */
-	for (i = 0; i < TEST_BLOCK_LEN; i++)
-		block[i] = (unsigned char)(i & 0xff);
-
-	/* Start timer */
-	time (&startTime);
-
-	/* Digest blocks */
-	MDInit (&context);
-	for (i = 0; i < TEST_BLOCK_COUNT; i++)
-		MDUpdate (&context, block, TEST_BLOCK_LEN);
-	MDFinal (digest, &context);
-
-	/* Stop timer */
-	time (&endTime);
-
-	printf (" done\n");
-	printf ("Digest = ");
-	MDPrint (digest);
-	printf ("\nTime = %ld seconds\n", (long)(endTime-startTime));
-	printf
-		("Speed = %ld bytes/second\n",
-		 (long)TEST_BLOCK_LEN * (long)TEST_BLOCK_COUNT/(endTime-startTime));
 }
 
 /* Digests a reference suite of strings and prints the results.
