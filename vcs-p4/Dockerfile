@@ -11,3 +11,7 @@ RUN echo "deb http://package.perforce.com/apt/ubuntu xenial release" > /etc/apt/
 RUN apt-get -y update
 RUN apt-get -y install helix-p4d
 RUN apt-get -y install gcc make libssl-dev libcurl4-openssl-dev libexpat1-dev gettext python
+RUN useradd -ms /bin/bash gituser
+
+USER gituser
+WORKDIR /home/gituser
