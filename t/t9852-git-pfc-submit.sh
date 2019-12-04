@@ -238,6 +238,74 @@ test_expect_success 'git pfc shelve' '
 	)
 '
 
+test_expect_success 'git pfc shelve add' '
+	test_when_finished cleanup_git &&
+	git p4 clone --dest="$git" //depot/@all &&
+	(
+		cd "$git" &&
+		output_shopping_list_v1 > shopping_list_to_be_shelved.txt &&
+		git add shopping_list_to_be_shelved.txt &&
+		git commit -m "A new file to be shelved" &&
+		git --git-dir="$git"/.git pfc shelve &&
+		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		p4 print -q -o shopping_list_shelved.txt //depot/shopping_list_to_be_shelved.txt@="$shelve_cl" &&
+		test_cmp shopping_list_shelved.txt shopping_list_to_be_shelved.txt
+	)
+'
+
+test_expect_success 'git pfc cherry-pick a shelve with a deleted file' '
+	test_when_finished cleanup_git &&
+	git p4 clone --dest="$git" //depot/@all &&
+	(
+		cd "$git" &&
+		git checkout -b shelve_branch &&
+		git rm file1 &&
+		git commit -m "A deleted file in a shelve " &&
+		git --git-dir="$git"/.git pfc shelve &&
+		git checkout master &&
+		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		git pfc cherry-pick "$shelve_cl" &&
+		git diff master shelve_branch  >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_success 'git pfc shelve add file in a new dir' '
+	test_when_finished cleanup_git &&
+	git p4 clone --dest="$git" //depot/@all &&
+	(
+		cd "$git" &&
+		mkdir shelve &&
+		output_shopping_list_v1 > shelve/shopping_list.txt &&
+		git add shelve/shopping_list.txt &&
+		git commit -m "A new file to be shelved" &&
+		git --git-dir="$git"/.git pfc shelve &&
+		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		p4 print -q -o shelve/shopping_list_shelve.txt //depot/shelve/shopping_list.txt@="$shelve_cl" &&
+		test_cmp shelve/shopping_list_shelve.txt shelve/shopping_list.txt
+	)
+'
+
+test_expect_success 'git pfc shelve add file and format-patch' '
+	test_when_finished cleanup_git &&
+	git p4 clone --dest="$git" //depot/@all &&
+	(
+		cd "$git" &&
+		git checkout -b shelve_branch &&
+		mkdir shelve &&
+		output_shopping_list_v1 > shelve/shopping_list.txt &&
+		git add shelve/shopping_list.txt &&
+		git commit -m "A new file to be shelved" &&
+		git --git-dir="$git"/.git pfc shelve &&
+		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		git checkout master &&
+		git pfc format-patch "$shelve_cl" &&
+		git am 0001*patch &&
+		git diff master shelve_branch  >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
 
 test_expect_success 'git pfc submit new file' '
 	git p4 clone --dest="$git" //depot/@all &&
