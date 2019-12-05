@@ -188,8 +188,27 @@ test_expect_success 'git pfc cherry-pick' '
 		test_line_count = 0 diff.txt &&
 		git reset --hard p4/master
 	)
-
 '
+
+test_expect_success 'git pfc cherry-pick unicode+x' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$cli" &&
+		output_utf16_text > xtext_utf16.txt &&
+		p4 add -t utf16+x xtext_utf16.txt &&
+		p4 submit -d "Submit a utf16 file with exec flag"
+	) &&
+	(
+		cd "$git" &&
+		git p4 sync &&
+		last_cl=`extract_changelist_from_commit p4/master` &&
+		git pfc cherry-pick //depot/ "$last_cl" &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
 test_expect_success 'git pfc shelve' '
 	test_when_finished cleanup_git &&
 	(

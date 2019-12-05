@@ -2101,7 +2101,7 @@ static void fast_import_blob_p4filedesc(int fd_out, const struct depot_file_t *p
 			temp = mks_tempfile_t(".p4_blob_XXXXXX");
 			if (!temp)
 				die ("Failed to create temp file");
-			if (!strcmp(str_dict_get_value(&map, "type"), "utf16"))
+			if (p4type2bintype(str_dict_get_value(&map, "type")) == P4_FORMAT_UTF16_TYPE)
 				icd = iconv_open("utf16", "utf8");
 			mode = p4type2mode(str_dict_get_value(&map, "type"));
 			continue;
