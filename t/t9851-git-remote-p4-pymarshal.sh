@@ -17,4 +17,8 @@ test_expect_success 'copy strbuf dict' '
 	test-py-marshal copy_long_strbuf_dict
 '
 
+test_expect_success 'delete elements from the strbuf dict' '
+	test-py-marshal delete_elems_strbuf_dict
+'
+
 test_done

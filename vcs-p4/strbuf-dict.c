@@ -108,6 +108,16 @@ void str_dict_reset(struct hashmap *map)
 	str_dict_init(map);
 }
 
+void str_dict_remove_key(struct hashmap *map, const char *key)
+{
+	struct hashmap_entry *entry = NULL;
+	keyval_t *kv = str_dict_get_kw(map, key);
+	if (!kv)
+		return;
+	while ((entry = hashmap_remove(map, &kv->ent, kv->key.buf)))
+		keyval_release(container_of(entry, keyval_t, ent));
+}
+
 void str_dict_put_kw(struct hashmap *map, keyval_t *kw)
 {
 	struct hashmap_entry *prev_entry = NULL;

@@ -35,4 +35,5 @@ void str_dict_copy(struct hashmap *dst, struct hashmap *src);
 int str_dict_strcmp(struct hashmap *map, const char *key, const char *valcmp);
 int str_dict_has_all(struct hashmap *map, const char **keys, size_t nkeys);
 int str_dict_has(struct hashmap *map, const char *key);
+void str_dict_remove_key(struct hashmap *map, const char *key);
 #endif

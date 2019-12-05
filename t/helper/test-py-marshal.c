@@ -251,6 +251,40 @@ _err:
 	return res;
 }
 
+static int delete_elems_strbuf_dict()
+{
+	int res = 1;
+	int i;
+	const char *list_of_keys_to_remove[] = {
+		"key5",
+		"key104",
+		"key999"
+	};
+	struct hashmap dict;
+	str_dict_init(&dict);
+	for (i = 0; i < 1000; i++) {
+		struct strbuf key = STRBUF_INIT;
+		strbuf_addf(&key, "key%d", i);
+		str_dict_set_key_valf(&dict, key.buf, "val%d", i+100);
+		strbuf_release(&key);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(list_of_keys_to_remove); i++) {
+		str_dict_remove_key(&dict, list_of_keys_to_remove[i]);
+	}
+	if (hashmap_get_size(&dict) != (1000 - ARRAY_SIZE(list_of_keys_to_remove)))
+		goto _err;
+
+	for (i = 0; i < ARRAY_SIZE(list_of_keys_to_remove); i++) {
+		if (str_dict_has(&dict, list_of_keys_to_remove[i]))
+			goto _err;
+	}
+	res = 0;
+_err:
+	str_dict_destroy(&dict);
+	return res;
+}
+
 int cmd_main(int argc, const char **argv)
 {
 	if (argc < 2)
@@ -272,6 +306,9 @@ int cmd_main(int argc, const char **argv)
 	}
 	if (strcmp(argv[1], "copy_long_strbuf_dict") == 0) {
 		return copy_long_strbuf_dict();
+	}
+	if (strcmp(argv[1], "delete_elems_strbuf_dict") == 0) {
+		return delete_elems_strbuf_dict();
 	}
 	return 1;
 }
