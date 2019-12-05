@@ -418,7 +418,50 @@ test_expect_success 'git pfc submit readd file' '
 	)
 '
 
-test_expect_success 'git pfc fetch' '
+test_expect_failure 'git pfc cherry-pick symlink' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$cli" &&
+		mkdir -p topdir/subdir1/subdir2/subdir3 &&
+		printf "A message\n" > topdir/subdir1/subdir2/subdir3/sssfile.txt &&
+		p4 add topdir/subdir1/subdir2/subdir3/sssfile.txt &&
+		cd topdir &&
+		ln -s subdir1/subdir2/subdir3/sssfile.txt linkedfile.txt &&
+		p4 add linkedfile.txt &&
+		p4 submit -d "A new symlink"
+	) &&
+	(
+		cd "$git" &&
+		cl=`p4 changes -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		git pfc cherry-pick "$cl" &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+test_expect_success 'git pfc submit symlink' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		mkdir -p topdir/subdir1/subdir2/subdir3 &&
+		printf "A message\n" > topdir/subdir1/subdir2/subdir3/realfile.txt &&
+		git add topdir/subdir1/subdir2/subdir3/realfile.txt &&
+		cd topdir &&
+		ln -s subdir1/subdir2/subdir3/realfile.txt tofile.txt &&
+		git add tofile.txt &&
+		git commit -m "A linked file" &&
+		git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
+
+test_expect_failure 'git pfc fetch' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(
