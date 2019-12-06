@@ -437,7 +437,7 @@ test_expect_success 'git pfc submit readd file' '
 	)
 '
 
-test_expect_failure 'git pfc cherry-pick symlink' '
+test_expect_success 'git pfc cherry-pick symlink' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(
@@ -480,7 +480,7 @@ test_expect_success 'git pfc submit symlink' '
 '
 
 
-test_expect_failure 'git pfc fetch' '
+test_expect_success 'git pfc fetch' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(

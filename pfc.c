@@ -2130,6 +2130,8 @@ static void fast_import_blob_p4filedesc(int fd_out, const struct depot_file_t *p
 			str_dict_put_kw(&map, kw_reencoded);
 			kw = str_dict_get_kw(&map, "data");
 		}
+		if (0120000 == mode)
+			strbuf_trim_trailing_newline(&kw->val);
 		if (write_in_full(temp->fd, kw->val.buf, kw->val.len) != kw->val.len) die("Block not written");
 	}
 _leave:
