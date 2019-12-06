@@ -394,6 +394,28 @@ test_expect_failure 'git pfc submit change mode' '
 	)
 '
 
+test_expect_failure 'git pfc submit contents change and change mode' '
+	(
+		cd "$cli" &&
+		printf "#! /bin/sh\n" > HelloWorld.sh &&
+		chmod 644 HelloWorld.sh &&
+		p4 add HelloWorld.sh &&
+		p4 submit -d "hello world scripts"
+	) &&
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		printf "echo Hello World\n" >> HelloWorld.sh &&
+		chmod 755 HelloWorld.sh &&
+		git add script.sh && git commit -m "Hello + 0755 mode" &&
+		git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
 test_expect_success 'git pfc submit deleted file' '
 	(
 		cd "$cli" &&
