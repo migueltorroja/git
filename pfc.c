@@ -531,7 +531,7 @@ static int p4_set_exec_git(const char *client_dir, const char *p4_path, const ch
 	struct argv_array p4args = ARGV_ARRAY_INIT;
 	int res;
 	p4_opened_type(client_dir, p4_path, &base_type, &mode_type);
-	if (ends_with(mode_type.buf, "755"))
+	if (ends_with(git_mod, "755"))
 		add_p4_modes(&mode_type,"x");
 	else
 		remove_p4_modes(&mode_type,"x");

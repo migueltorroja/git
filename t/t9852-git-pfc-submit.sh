@@ -362,7 +362,7 @@ test_expect_success 'git pfc submit binary' '
 	)
 '
 
-test_expect_failure 'git pfc submit new file with exec flag' '
+test_expect_success 'git pfc submit new file with exec flag' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(
@@ -377,7 +377,7 @@ test_expect_failure 'git pfc submit new file with exec flag' '
 	)
 '
 
-test_expect_failure 'git pfc submit change mode' '
+test_expect_success 'git pfc submit change mode' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(
@@ -394,7 +394,7 @@ test_expect_failure 'git pfc submit change mode' '
 	)
 '
 
-test_expect_failure 'git pfc submit contents change and change mode' '
+test_expect_success 'git pfc submit contents change and change mode' '
 	(
 		cd "$cli" &&
 		printf "#! /bin/sh\n" > HelloWorld.sh &&
@@ -408,7 +408,7 @@ test_expect_failure 'git pfc submit contents change and change mode' '
 		cd "$git" &&
 		printf "echo Hello World\n" >> HelloWorld.sh &&
 		chmod 755 HelloWorld.sh &&
-		git add script.sh && git commit -m "Hello + 0755 mode" &&
+		git add HelloWorld.sh && git commit -m "Hello + 0755 mode" &&
 		git pfc submit &&
 		git p4 sync &&
 		git diff HEAD p4/master >diff.txt &&
