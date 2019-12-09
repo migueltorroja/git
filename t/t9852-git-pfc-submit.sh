@@ -83,13 +83,18 @@ extract_changelist_from_commit() {
 	git log -1 $1 | sed -ne 's/.*git-p4.*change = \([0-9]\+\)[^0-9]/\1/p'
 }
 
+extract_depotpath_from_commit() {
+	git log -1 $1 | sed -ne 's/.*git-p4.*depot-paths[^=]*=[^=]"\([^"]\+\)".*/\1/p'
+}
+
 test_expect_success 'start p4d' '
 	start_p4d
 '
 
 test_expect_success 'add p4 files' '
 	(
-		cd "$cli" &&
+		mkdir "$cli"/mainbranch &&
+		cd "$cli"/mainbranch &&
 		echo file1 >file1 &&
 		p4 add file1 &&
 		p4 submit -d "file1" &&
@@ -100,7 +105,7 @@ test_expect_success 'add p4 files' '
 '
 
 test_expect_success 'basic git pfc submit' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -116,7 +121,7 @@ test_expect_success 'basic git pfc submit' '
 '
 
 test_expect_success 'git pfc fsck' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -127,7 +132,7 @@ test_expect_success 'git pfc fsck' '
 '
 
 test_expect_success 'git pfc fsck fail' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -141,7 +146,7 @@ test_expect_success 'git pfc fsck fail' '
 
 test_expect_success 'git pfc fsck unicode' '
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		output_utf8_text > text_utf8.txt &&
 		p4 add -t utf8 text_utf8.txt &&
 		output_utf16_text > text_utf16.txt &&
@@ -150,7 +155,7 @@ test_expect_success 'git pfc fsck unicode' '
 		p4 add -t utf8 text_utf8_bom.txt &&
 		p4 submit -d "some unicode files"
 	) &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -161,9 +166,9 @@ test_expect_success 'git pfc fsck unicode' '
 '
 
 test_expect_success 'git pfc cherry-pick' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git && (
-		cd "$cli"
+		cd "$cli"/mainbranch
 		mkdir dir1 &&
 		printf "file1" > dir1/file.txt &&
 		printf "#! /bin/sh\n" > dir1/run.sh &&
@@ -182,8 +187,8 @@ test_expect_success 'git pfc cherry-pick' '
 		git p4 sync &&
 		last_cl=`extract_changelist_from_commit p4/master` &&
 		prev_cl=`extract_changelist_from_commit p4/master~1` &&
-		git pfc cherry-pick //depot/ "$prev_cl" &&
-		git pfc cherry-pick //depot/ "$last_cl" &&
+		git pfc cherry-pick //depot/mainbranch/ "$prev_cl" &&
+		git pfc cherry-pick //depot/mainbranch/ "$last_cl" &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt &&
 		git reset --hard p4/master
@@ -191,10 +196,10 @@ test_expect_success 'git pfc cherry-pick' '
 '
 
 test_expect_success 'git pfc cherry-pick unicode+x' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		output_utf16_text > xtext_utf16.txt &&
 		p4 add -t utf16+x xtext_utf16.txt &&
 		p4 submit -d "Submit a utf16 file with exec flag"
@@ -203,7 +208,7 @@ test_expect_success 'git pfc cherry-pick unicode+x' '
 		cd "$git" &&
 		git p4 sync &&
 		last_cl=`extract_changelist_from_commit p4/master` &&
-		git pfc cherry-pick //depot/ "$last_cl" &&
+		git pfc cherry-pick //depot/mainbranch/ "$last_cl" &&
 		git diff HEAD p4/master >diff.txt &&
 		test_line_count = 0 diff.txt
 	)
@@ -212,11 +217,11 @@ test_expect_success 'git pfc cherry-pick unicode+x' '
 test_expect_success 'git pfc shelve' '
 	test_when_finished cleanup_git &&
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		output_shopping_list_v1 > shopping_list.txt &&
 		p4 add shopping_list.txt && p4 submit -d "shopping list v1"
 	) &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	(
 		cd "$git" &&
 		output_shopping_list_plus_Olive_oil > shopping_list.txt &&
@@ -233,7 +238,7 @@ test_expect_success 'git pfc shelve' '
 		git checkout -b shelve_branch HEAD~1 && output_shopping_list_plus_Eggs > shopping_list.txt &&
 		git add shopping_list.txt && git commit -m "Adding Eggs" &&
 		git pfc shelve && shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
-		p4 print -q -o shelve_shopping_list_v2.txt //depot/shopping_list.txt@="$shelve_cl" &&
+		p4 print -q -o shelve_shopping_list_v2.txt //depot/mainbranch/shopping_list.txt@="$shelve_cl" &&
 		test_cmp shelve_shopping_list_v2.txt shopping_list.txt &&
 		git checkout master && git pfc cherry-pick "$shelve_cl" &&
 		output_shopping_list_plus_Eggs_Olive_oil > shopping_list_v4.txt &&
@@ -243,7 +248,7 @@ test_expect_success 'git pfc shelve' '
 
 test_expect_success 'git pfc shelve add' '
 	test_when_finished cleanup_git &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	(
 		cd "$git" &&
 		output_shopping_list_v1 > shopping_list_to_be_shelved.txt &&
@@ -251,14 +256,14 @@ test_expect_success 'git pfc shelve add' '
 		git commit -m "A new file to be shelved" &&
 		git pfc shelve &&
 		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
-		p4 print -q -o shopping_list_shelved.txt //depot/shopping_list_to_be_shelved.txt@="$shelve_cl" &&
+		p4 print -q -o shopping_list_shelved.txt //depot/mainbranch/shopping_list_to_be_shelved.txt@="$shelve_cl" &&
 		test_cmp shopping_list_shelved.txt shopping_list_to_be_shelved.txt
 	)
 '
 
 test_expect_success 'git pfc cherry-pick a shelve with a deleted file' '
 	test_when_finished cleanup_git &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	(
 		cd "$git" &&
 		git checkout -b shelve_branch &&
@@ -275,7 +280,7 @@ test_expect_success 'git pfc cherry-pick a shelve with a deleted file' '
 
 test_expect_success 'git pfc shelve add file in a new dir' '
 	test_when_finished cleanup_git &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	(
 		cd "$git" &&
 		mkdir shelve &&
@@ -284,14 +289,14 @@ test_expect_success 'git pfc shelve add file in a new dir' '
 		git commit -m "A new file to be shelved" &&
 		git pfc shelve &&
 		shelve_cl=`p4 changes -s pending -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
-		p4 print -q -o shelve/shopping_list_shelve.txt //depot/shelve/shopping_list.txt@="$shelve_cl" &&
+		p4 print -q -o shelve/shopping_list_shelve.txt //depot/mainbranch/shelve/shopping_list.txt@="$shelve_cl" &&
 		test_cmp shelve/shopping_list_shelve.txt shelve/shopping_list.txt
 	)
 '
 
 test_expect_success 'git pfc shelve add file and format-patch' '
 	test_when_finished cleanup_git &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	(
 		cd "$git" &&
 		git checkout -b shelve_branch &&
@@ -311,7 +316,7 @@ test_expect_success 'git pfc shelve add file and format-patch' '
 
 
 test_expect_success 'git pfc submit new file' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -325,7 +330,7 @@ test_expect_success 'git pfc submit new file' '
 '
 
 test_expect_success 'git pfc new file twice' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -337,7 +342,7 @@ test_expect_success 'git pfc new file twice' '
 '
 
 test_expect_success 'git pfc submit binary' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -363,7 +368,7 @@ test_expect_success 'git pfc submit binary' '
 '
 
 test_expect_success 'git pfc submit new file with exec flag' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -378,7 +383,7 @@ test_expect_success 'git pfc submit new file with exec flag' '
 '
 
 test_expect_success 'git pfc submit change mode' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -396,13 +401,13 @@ test_expect_success 'git pfc submit change mode' '
 
 test_expect_success 'git pfc submit contents change and change mode' '
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		printf "#! /bin/sh\n" > HelloWorld.sh &&
 		chmod 644 HelloWorld.sh &&
 		p4 add HelloWorld.sh &&
 		p4 submit -d "hello world scripts"
 	) &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -418,13 +423,13 @@ test_expect_success 'git pfc submit contents change and change mode' '
 
 test_expect_success 'git pfc submit from exec to non exec' '
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		printf "#! /bin/sh\n" > AnotherScript.sh &&
 		chmod 755 AnotherScript.sh &&
 		p4 add AnotherScript.sh &&
 		p4 submit -d "A very useful script"
 	) &&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -439,12 +444,12 @@ test_expect_success 'git pfc submit from exec to non exec' '
 
 test_expect_success 'git pfc submit deleted file' '
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		printf "File about to be deleted" >temporal_file.txt &&
 		p4 add temporal_file.txt &&
 		p4 submit -d "Temporal file"
 	)&&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -459,12 +464,12 @@ test_expect_success 'git pfc submit deleted file' '
 
 test_expect_success 'git pfc submit readd file' '
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		printf "File about to be deleted" >temporal_file_1.txt &&
 		p4 add temporal_file_1.txt &&
 		p4 submit -d "Temporal file"
 	)&&
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -481,7 +486,7 @@ test_expect_success 'git pfc submit readd file' '
 '
 
 test_expect_success 'git pfc submit renamed folder' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -501,10 +506,10 @@ test_expect_success 'git pfc submit renamed folder' '
 '
 
 test_expect_success 'git pfc cherry-pick symlink' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
-		cd "$cli" &&
+		cd "$cli"/mainbranch &&
 		mkdir -p topdir/subdir1/subdir2/subdir3 &&
 		printf "A message\n" > topdir/subdir1/subdir2/subdir3/sssfile.txt &&
 		p4 add topdir/subdir1/subdir2/subdir3/sssfile.txt &&
@@ -524,7 +529,7 @@ test_expect_success 'git pfc cherry-pick symlink' '
 '
 
 test_expect_success 'git pfc submit symlink' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
@@ -542,9 +547,60 @@ test_expect_success 'git pfc submit symlink' '
 	)
 '
 
+test_expect_success 'git pfc discover branches' '
+	(
+		cd "cli"/mainbranch &&
+		mkdir build &&
+		printf "all:\n" > build/Makefile &&
+		p4 add build/Makefile &&
+		p4 submit -d "a new file in a new dir"
+	) &&
+	p4 integrate //depot/mainbranch/... //depot/branch1/... &&
+	p4 submit -d "A new branch to submit" //depot/branch1/... &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		last_cl=`extract_changelist_from_commit p4/master` &&
+		git pfc -ddd discover-branches //depot/.../build/Makefile@"$last_cl",#head &&
+		git branch -r --list p4/doesnt_exist > n_branches.txt && test_line_count = 0 n_branches.txt &&
+		git branch -r --list p4/branch1 > n_branches.txt && test_line_count = 1 n_branches.txt &&
+		last_branch_cl=`extract_changelist_from_commit p4/branch1` &&
+		prev_branch_cl=`extract_changelist_from_commit p4/branch1~1` &&
+		test "$prev_branch_cl" -lt "$last_branch_cl" &&
+		test `extract_depotpath_from_commit p4/branch1` = //depot/branch1/ &&
+		test `extract_depotpath_from_commit p4/branch1~` = //depot/mainbranch/ &&
+		test "$prev_branch_cl" -eq "$last_cl"
+	)
+'
+
+#test_expect_failure 'git pfc submit dir with previous file name' '
+#	(
+#		cd "$cli"/mainbranch &&
+#		mkdir -p a_subdir &&
+#		output_shopping_list_v1 > a_subdir/shopping_list &&
+#		p4 add a_subdir/shopping_list &&
+#		p4 submit -d "another shopping list"
+#	) &&
+#	git p4 clone --dest="$git" //depot/mainbranch/@all &&
+#	test_when_finished cleanup_git &&
+#	(
+#		cd "$git" &&
+#		git rm a_subdir/shopping_list &&
+#		mkdir -p a_subdir/shopping_list &&
+#		output_shopping_list_v1 > a_subdir/shopping_list/shopping_list.txt &&
+#		git add a_subdir/shopping_list/shopping_list.txt &&
+#		git commit -m "shopping list now in a another subdir" &&
+#		git pfc submit &&
+#		git p4 sync &&
+#		git diff HEAD p4/master >diff.txt &&
+#		test_line_count = 0 diff.txt
+#	)
+#'
+
 
 test_expect_success 'git pfc fetch' '
-	git p4 clone --dest="$git" //depot/@all &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
