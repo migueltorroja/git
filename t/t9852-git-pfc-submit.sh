@@ -574,6 +574,34 @@ test_expect_success 'git pfc discover branches' '
 	)
 '
 
+test_expect_success 'git pfc fetch after discover branches' '
+	p4 integrate //depot/mainbranch/... //depot/otherbranches/branch2/... &&
+	p4 submit -d "A new branch to submit" //depot/otherbranches/branch2/... &&
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		last_cl=`extract_changelist_from_commit p4/master` &&
+		git pfc -ddd discover-branches //depot/.../build/Makefile@"$last_cl",#head &&
+		git branch -r --list p4/doesnt_exist > n_branches.txt && test_line_count = 0 n_branches.txt &&
+		git branch -r --list p4/otherbranches_branch2 > n_branches.txt && test_line_count = 1 n_branches.txt &&
+		last_branch_cl=`extract_changelist_from_commit p4/otherbranches_branch2` &&
+		prev_branch_cl=`extract_changelist_from_commit p4/otherbranches_branch2~1` &&
+		test "$prev_branch_cl" -lt "$last_branch_cl" &&
+		test `extract_depotpath_from_commit p4/otherbranches_branch2` = //depot/otherbranches/branch2/ &&
+		test `extract_depotpath_from_commit p4/otherbranches_branch2~` = //depot/mainbranch/ &&
+		test "$prev_branch_cl" -eq "$last_cl" &&
+		git checkout otherbranches/branch2 &&
+		printf "\nclean:\n" >build/Makefile &&
+		git add build/Makefile &&
+		git commit -m "A new target in the Makefile" &&
+		git pfc submit &&
+		git pfc fetch &&
+		git diff HEAD p4/otherbranches_branch2 >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
 #test_expect_failure 'git pfc submit dir with previous file name' '
 #	(
 #		cd "$cli"/mainbranch &&
