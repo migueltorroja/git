@@ -97,7 +97,7 @@ static void wildcard_encode(struct strbuf *sb);
 
 struct command_t;
 
-typedef void (*run_type) (struct command_t *pcmd,int gargc, const char **gargv);
+typedef int (*run_type) (struct command_t *pcmd,int gargc, const char **gargv);
 typedef void (*deinit_type) (struct command_t *pcmd);
 
 typedef struct command_t
@@ -570,7 +570,7 @@ static int p4_has_admin_permissions(const char *depot_path)
 	return has_admin;
 }
 
-static void p4debug_cmd_run(command_t *pcmd, int gargc, const char **gargv)
+static int p4debug_cmd_run(command_t *pcmd, int gargc, const char **gargv)
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
@@ -589,7 +589,7 @@ static void p4debug_cmd_run(command_t *pcmd, int gargc, const char **gargv)
 
 	close(child_p4.out);
 	str_dict_destroy(&map);
-	finish_command(&child_p4);
+	return finish_command(&child_p4);
 }
 
 void p4_cmd_default_deinit(struct command_t *pcmd)
@@ -1727,6 +1727,7 @@ int p4submit_apply(const char *commit_id)
 	struct child_process p4_submit = CHILD_PROCESS_INIT;
 	int clean_opened_files = 1;
 	struct hashmap_entry *entry;
+	int res = 1;
 	p4_files_modified_init(&files_to_update);
 	argv_array_push(&gitargs, "diff-tree");
 	argv_array_push(&gitargs, "-r");
@@ -1801,19 +1802,21 @@ int p4submit_apply(const char *commit_id)
 		}
 	}
 	argv_array_clear(&gitargs);
+	res = 0;
 leave:
 	strbuf_release(&user_id);
 	p4_files_modified_destroy(&files_to_update);
-	return 0;
+	return res;
 }
 
-void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
+int p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 {
 	struct hashmap map;
 	struct strbuf strb_master = STRBUF_INIT;
 	struct strbuf commits = STRBUF_INIT;
 	const char *origin = NULL;
 	const char *branch = NULL;
+	int res = 0;
 	struct option options[] = {
 		OPT_STRING(0,"origin",&origin,N_("revision"), N_("Base commit point")),
 		OPT_BOOL('M',NULL,&p4submit_options.detect_renames,N_("Detect Renames")),
@@ -1937,13 +1940,14 @@ void p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 			if (p4submit_options.dry_run) {
 				git_print_short_log(stdout, commit_id);
 			}
-			else
-				p4submit_apply(commit_id);
+			else if ((res = p4submit_apply(commit_id)) != 0)
+				break;
 		}
 		strbuf_list_free(strb_list);
 	}
 	strbuf_release(&strb_master);
 	strbuf_release(&commits);
+	return res;
 }
 
 static struct p4_user_map_t *p4usermap_get_cache()
@@ -2376,7 +2380,7 @@ static int p4revtoi(const char *p4rev)
 }
 
 
-static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
+static int add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 		struct depot_changelist_desc_t *current,
 		const char *depot_path,
 		int changelist)
@@ -2478,7 +2482,7 @@ static void add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 	}
 	close(child_p4.out);
 	str_dict_destroy(&map);
-	finish_command(&child_p4);
+	return finish_command(&child_p4);
 }
 
 static void add_list_files_from_changelist_range(struct list_head *list_changes, struct depot_change_range_t *chrng)
@@ -2600,7 +2604,6 @@ static void p4export_change(int fd_out, struct depot_change_range_t *chg_range)
 static int p4export_change_commit(struct strbuf *p_sb_sha1, struct depot_change_range_t *p_chg_rng)
 {
 	struct child_process git_fast_import = CHILD_PROCESS_INIT;
-	int fail = 0;
 	FILE *fp = NULL;
 	argv_array_push(&git_fast_import.args, "git");
 	argv_array_push(&git_fast_import.args, "fast-import");
@@ -2616,12 +2619,11 @@ static int p4export_change_commit(struct strbuf *p_sb_sha1, struct depot_change_
 		die("Failed to retrieve commit");
 	}
 	fclose(fp);
-	finish_command(&git_fast_import);
-	return fail;
+	return finish_command(&git_fast_import);
 }
 
 
-void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
+int p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 {
 	struct option options[] = {
 		OPT_END()
@@ -2642,8 +2644,8 @@ void p4format_patch_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	argv_array_pushf(&git_format_patch.args, "%s~1..%s", commit_sha1.buf, commit_sha1.buf);
 	if (start_command(&git_format_patch))
 		die("cannot start git format-patch");
-	finish_command(&git_format_patch);
 	depot_change_range_destroy(&chg_range);
+	return finish_command(&git_format_patch);
 }
 
 void p4submit_cmd_init(struct command_t *pcmd)
@@ -2807,12 +2809,13 @@ static void p4discover_branches_find_p4_parent(struct depot_file_pair_t *depot_p
 	str_dict_destroy(&map);
 }
 
-static void p4create_new_p4_branch(struct strbuf *lbranch, struct depot_file_pair_t *dp)
+static int p4create_new_p4_branch(struct strbuf *lbranch, struct depot_file_pair_t *dp)
 {
 	struct strbuf base_sha = STRBUF_INIT;
 	struct strbuf user = STRBUF_INIT;
 	struct strbuf gitp4_line = STRBUF_INIT;
 	struct hashmap m_describe;
+	int res = 0;
 	str_dict_init(&m_describe);
 	find_p4_depot_commit(&base_sha, &dp->b);
 	if (!base_sha.len) {
@@ -2848,15 +2851,16 @@ static void p4create_new_p4_branch(struct strbuf *lbranch, struct depot_file_pai
 			str_dict_get_value(&m_describe, "desc"), gitp4_line.buf);
 	str_dict_set_key_val(&m_describe, "committer", user.buf);
 	str_dict_set_key_val(&m_describe, "base_commit", base_sha.buf);
-	git_commit(&m_describe);
+	res = git_commit(&m_describe);
 _leave:
 	str_dict_destroy(&m_describe);
 	strbuf_release(&gitp4_line);
 	strbuf_release(&user);
 	strbuf_release(&base_sha);
+	return res;
 }
 
-static void p4discover_branches_find_branches(struct list_head *new_branches, const char *str_pattern, const char *local_branch_pattern)
+static int p4discover_branches_find_branches(struct list_head *new_branches, const char *str_pattern, const char *local_branch_pattern)
 {
 	const char *p = NULL;
 	const char *ellipsis = "/.../";
@@ -2981,9 +2985,10 @@ _leave:
 	str_dict_destroy(&map);
 	strbuf_release(&sub_file_name);
 	strbuf_release(&common_depot_base_name);
+	return 0;
 }
 
-static void p4discover_branches_cmd_run(command_t *pcmd, int gargc, const char **gargv)
+static int p4discover_branches_cmd_run(command_t *pcmd, int gargc, const char **gargv)
 {
 	struct list_head list_branch_depots = LIST_HEAD_INIT(list_branch_depots);
 	struct list_head *pos;
@@ -3007,6 +3012,7 @@ static void p4discover_branches_cmd_run(command_t *pcmd, int gargc, const char *
 	}
 _leave:
 	list_depot_files_pair_destroy(&list_branch_depots);
+	return 0;
 }
 
 void p4discover_branches_cmd_init(struct command_t *pcmd)
@@ -3022,7 +3028,7 @@ void p4discover_branches_cmd_init(struct command_t *pcmd)
 }
 
 
-static void p4fetch_fast_import(struct list_head *l, const char *ref)
+static int p4fetch_fast_import(struct list_head *l, const char *ref)
 {
 	struct child_process git_fast_import = CHILD_PROCESS_INIT;
 	argv_array_push(&git_fast_import.args, "git");
@@ -3033,10 +3039,10 @@ static void p4fetch_fast_import(struct list_head *l, const char *ref)
 	}
 	p4export_list_changes(git_fast_import.in, l, ref);
 	close(git_fast_import.in);
-	finish_command(&git_fast_import);
+	return finish_command(&git_fast_import);
 }
 
-static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
+static int p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
 #if 0
 	struct option options[] = {
@@ -3046,6 +3052,7 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 	struct hashmap map;
 	struct hashmap_iter hm_iter;
 	struct hashmap_entry *entry;
+	int res = 0;
 	str_dict_init(&map);
 	p4_remote_branches_in_git(&map);
 	if (IS_LOG_DEBUG_ALLOWED) {
@@ -3107,14 +3114,17 @@ static void p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 		}
 		finish_command(&child_p4);
 		strbuf_addf(&git_reference, "refs/remotes/p4/%s", kw->key.buf);
-		p4fetch_fast_import(&list_of_changes, git_reference.buf);
+		res = p4fetch_fast_import(&list_of_changes, git_reference.buf);
 		strbuf_release(&git_reference);
 		list_depot_changelist_desc_destroy(&list_of_changes);
 		str_dict_destroy(&p4_change);
 		str_dict_destroy(&settings_map);
 		strbuf_release(&sb);
+		if (res)
+			break;
 	}
 	str_dict_destroy(&map);
+	return res;
 }
 
 
@@ -3358,7 +3368,6 @@ static int get_p4_settings_by_commit(struct hashmap *p4_settings, const char *co
 
 static int p4fsck_by_commit(const char *commit_sha1)
 {
-	int ret_err = 1;
 	struct hashmap p4_settings;
 	LIST_HEAD(cl_depot_files);
 	struct list_head *liter;
@@ -3366,6 +3375,7 @@ static int p4fsck_by_commit(const char *commit_sha1)
 	struct child_process git_cat_file = CHILD_PROCESS_INIT;
 	FILE *fp_out;
 	struct git_p4_file_stats git_p4_stats;
+	uintmax_t git_n_files_dont_match = 0;
 	git_p4_file_stats_init(&git_p4_stats);
 	str_dict_init(&p4_settings);
 	if (get_p4_settings_by_commit(&p4_settings, commit_sha1) != 0)
@@ -3388,7 +3398,6 @@ static int p4fsck_by_commit(const char *commit_sha1)
 	fp_out = fdopen(git_cat_file.out, "r");
 	uintmax_t p4_n_files = create_list_of_p4_file_from_changelist(&cl_depot_files, &chg_range);
 	uintmax_t git_n_files = 0;
-	uintmax_t git_n_files_dont_match = 0;
 	fprintf(stdout, "Total Files\n");
 	list_for_each(liter, &cl_depot_files) {
 		struct git_file_info f_info;
@@ -3429,10 +3438,12 @@ _err:
 	list_depot_files_destroy(&cl_depot_files);
 	depot_change_range_destroy(&chg_range);
 	str_dict_destroy(&p4_settings);
-	return ret_err;
+	if (git_n_files_dont_match)
+		return 1;
+	return 0;
 }
 
-static void p4fsck_cmd_run(command_t *pcmd, int argc, const char **argv)
+static int p4fsck_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
 	struct option options[] = {
 		OPT_END()
@@ -3440,6 +3451,7 @@ static void p4fsck_cmd_run(command_t *pcmd, int argc, const char **argv)
 	struct child_process child_git = CHILD_PROCESS_INIT;
 	struct strbuf sbline = STRBUF_INIT;
 	FILE *fp;
+	int res = 0;
 	argc = parse_options(argc, argv, NULL, options, NULL, 0);
 	child_git.git_cmd = 1;
 	child_git.out = -1;
@@ -3452,11 +3464,12 @@ static void p4fsck_cmd_run(command_t *pcmd, int argc, const char **argv)
 	}
 	fp = xfdopen(child_git.out, "r");
 	while (strbuf_getline(&sbline, fp) == 0) {
-		p4fsck_by_commit(sbline.buf);
+		if ((p4fsck_by_commit(sbline.buf)) != 0)
+			res = 1;
 	}
 	fclose(fp);
 	strbuf_release(&sbline);
-
+	return res;
 }
 
 static void p4fsck_cmd_init(struct command_t *pcmd)
@@ -3471,7 +3484,7 @@ static void p4fsck_cmd_init(struct command_t *pcmd)
 	pcmd->data = NULL;
 }
 
-static void p4cherry_pick_cmd_run(command_t *pcmd, int argc, const char **argv)
+static int p4cherry_pick_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
 	struct option options[] = {
 		OPT_END()
@@ -3492,8 +3505,8 @@ static void p4cherry_pick_cmd_run(command_t *pcmd, int argc, const char **argv)
 	argv_array_pushf(&git_format_patch.args, "%s", commit_sha1.buf);
 	if (start_command(&git_format_patch))
 		die("cannot start git format-patch");
-	finish_command(&git_format_patch);
 	depot_change_range_destroy(&chg_range);
+	return finish_command(&git_format_patch);
 }
 
 void p4cherry_pick_cmd_init(struct command_t *pcmd)
@@ -3508,7 +3521,7 @@ void p4cherry_pick_cmd_init(struct command_t *pcmd)
 	pcmd->data = NULL;
 }
 
-static void p4fast_export_cmd_run(command_t *pcmd, int argc, const char **argv)
+static int p4fast_export_cmd_run(command_t *pcmd, int argc, const char **argv)
 {
 	struct option options[] = {
 		OPT_END()
@@ -3522,6 +3535,7 @@ static void p4fast_export_cmd_run(command_t *pcmd, int argc, const char **argv)
 		print_change_range(p4_verbose_debug.fp, &chg_range);
 	p4export_change(STDOUT_FILENO, &chg_range);
 	depot_change_range_destroy(&chg_range);
+	return 0;
 }
 
 void p4fast_export_cmd_init(struct command_t *pcmd)
@@ -3614,6 +3628,7 @@ int cmd_main(int argc, const char **argv)
 	const char *prog_name = argv[0];
 	const char *p4cmd_name = NULL;
 	int debuglevel = 0;
+	int res = 0;
 	struct option options[] = {
 		OPT_COUNTUP('d', NULL, &debuglevel, N_("Debug level, the more -d the higher the debug level")),
 		OPT_END()
@@ -3635,9 +3650,9 @@ int cmd_main(int argc, const char **argv)
 		print_usage(stderr,prog_name);
 		exit(2);
 	}
-	cmd.run_fn(&cmd, argc, argv);
+	res = cmd.run_fn(&cmd, argc, argv);
 	p4_cmd_destroy(&cmd);
 	p4usermap_cache_destroy();
-	return 0;
+	return res;
 }
 

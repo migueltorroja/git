@@ -134,7 +134,7 @@ test_expect_success 'git pfc fsck fail' '
 		printf "\nA new line at ened\n" >> file2 &&
 		git add file2 && git commit --amend -c HEAD &&
 		number_of_git_files=`git ls-files | wc -l` &&
-		git pfc fsck HEAD~1..HEAD >git_fsck_result.txt &&
+		test_must_fail git pfc fsck HEAD~1..HEAD >git_fsck_result.txt &&
 		grep -e "^Total checked: $number_of_git_files failed 1" git_fsck_result.txt
 	)
 '
@@ -324,7 +324,7 @@ test_expect_success 'git pfc submit new file' '
 	)
 '
 
-test_expect_failure 'git pfc new file twice' '
+test_expect_success 'git pfc new file twice' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
 	(
