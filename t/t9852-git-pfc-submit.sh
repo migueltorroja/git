@@ -416,6 +416,27 @@ test_expect_success 'git pfc submit contents change and change mode' '
 	)
 '
 
+test_expect_success 'git pfc submit from exec to non exec' '
+	(
+		cd "$cli" &&
+		printf "#! /bin/sh\n" > AnotherScript.sh &&
+		chmod 755 AnotherScript.sh &&
+		p4 add AnotherScript.sh &&
+		p4 submit -d "A very useful script"
+	) &&
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		chmod 644 AnotherScript.sh &&
+		git add AnotherScript.sh && git commit -m "from 0755 to 0644" &&
+		git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
 test_expect_success 'git pfc submit deleted file' '
 	(
 		cd "$cli" &&
