@@ -480,6 +480,26 @@ test_expect_success 'git pfc submit readd file' '
 	)
 '
 
+test_expect_success 'git pfc submit renamed folder' '
+	git p4 clone --dest="$git" //depot/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		mkdir -p oldname_dir &&
+		output_shopping_list_v1 > oldname_dir/shopping_list.txt &&
+		output_utf8_text > oldname_dir/chapter1.txt &&
+		git add oldname_dir/shopping_list.txt &&
+		git add oldname_dir/chapter1.txt &&
+		git commit -m "old name dir" &&
+		git mv oldname_dir renamed_dir &&
+		git commit -m "Renamed dir" &&
+		git pfc submit &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt
+	)
+'
+
 test_expect_success 'git pfc cherry-pick symlink' '
 	git p4 clone --dest="$git" //depot/@all &&
 	test_when_finished cleanup_git &&
