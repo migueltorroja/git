@@ -608,7 +608,7 @@ test_expect_success 'git pfc fetch' '
 		git pfc fetch &&
 		this_cl=`extract_changelist_from_commit p4/master` &&
 		test $last_cl -eq $this_cl &&
-		git pfc fsck p4/master~1 p4/master
+		git pfc fsck p4/master~1..p4/master
 	)
 '
 
