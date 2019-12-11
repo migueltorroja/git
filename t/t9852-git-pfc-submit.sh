@@ -664,6 +664,34 @@ test_expect_success 'git pfc fetch after discover branches' '
 #	)
 #'
 
+test_expect_success 'git pfc sync with an action move/delete' '
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$cli"/mainbranch &&
+		mkdir -p dir_to_be_deleted &&
+		output_shopping_list_v1 > dir_to_be_deleted/short_shopping_list.txt &&
+		p4 add dir_to_be_deleted/short_shopping_list.txt &&
+		p4 submit -d "Yet another shopping list about to be deleted" &&
+		p4 edit dir_to_be_deleted/short_shopping_list.txt &&
+		mkdir -p dir_moved &&
+		p4 move dir_to_be_deleted/short_shopping_list.txt dir_moved/final_shopphing_list.txt &&
+		p4 submit -d "shopping list moved"
+	) &&
+	(
+		cd "$git" &&
+		last_cl=`p4 changes -m1 //depot/mainbranch/... | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		prev_cl=`p4 changes -m1 //depot/mainbranch/dir_to_be_deleted/short_shopping_list.txt#1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		this_cl=`extract_changelist_from_commit p4/master` &&
+		test $this_cl -lt $prev_cl &&
+		git pfc cherry-pick $prev_cl &&
+		git pfc cherry-pick $last_cl &&
+		git pfc fetch &&
+		test $last_cl -eq `extract_changelist_from_commit p4/master` &&
+		test $prev_cl -eq `extract_changelist_from_commit p4/master~1` &&
+		git pfc fsck p4/master~2..p4/master
+	)
+'
 
 test_expect_success 'git pfc fetch all' '
 	git p4 clone --dest="$git" //depot/mainbranch/@all &&

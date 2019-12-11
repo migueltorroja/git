@@ -2480,28 +2480,28 @@ static int add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 							);
 				}
 				if (is_shelved) {
-					if (strcmp(action, "delete"))
+					if (strstr(action, "delete") == NULL)
 						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, changelist, 0, mode, p4_bin_type, md5);
 					else
 						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, p4_bin_type, md5);
 				}
 				else {
-					if (strcmp(action, "delete"))
+					if (strstr(action, "delete") == NULL)
 						list_depot_files_add(&current->list_of_modified_files, kw->val.buf, rev, 1, mode, P4_FORMAT_UNKNOWN_TYPE, md5);
 					else
 						list_depot_files_add(&current->list_of_deleted_files, kw->val.buf, 0, 1, mode, p4_bin_type, md5);
 					if (rev)
 						rev --; //Previous revision
 				}
-				if (strcmp(action, "add") &&
+				if (strstr(action, "add") == NULL &&
+						strstr(action, "delete") == NULL &&
 						strcmp(action, "branch") &&
 						strcmp(action, "integrate") &&
-						strcmp(action, "delete") &&
 						strcmp(action, "edit")) {
 					die("Action %s not supported", action);
 				}
 				else if (prev &&
-						strcmp(action, "add") &&
+						strstr(action, "add") == NULL &&
 						strcmp(action, "branch") &&
 						rev != 0) {
 					list_depot_files_add(&prev->list_of_modified_files,
