@@ -528,6 +528,25 @@ test_expect_success 'git pfc cherry-pick symlink' '
 	)
 '
 
+test_expect_success 'git pfc cherry-pick change stamp' '
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		cl=`p4 changes -m1 //depot/mainbranch/... | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		git reset --hard HEAD~1 &&
+		git diff HEAD p4/master >diff.txt &&
+		test_must_fail test_line_count = 0 diff.txt &&
+		git pfc cherry-pick "$cl" &&
+		git p4 sync &&
+		git diff HEAD p4/master >diff.txt &&
+		test_line_count = 0 diff.txt &&
+		git log -1 | grep "git-p4-cherry-pick.*//depot/mainbranch.*${cl}" &&
+		git log -1 | grep -v "git-p4:.*depot-paths.*change = "
+	)
+'
+
+
 test_expect_success 'git pfc submit symlink' '
 	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
@@ -571,6 +590,25 @@ test_expect_success 'git pfc discover branches' '
 		test `extract_depotpath_from_commit p4/branch1` = //depot/branch1/ &&
 		test `extract_depotpath_from_commit p4/branch1~` = //depot/mainbranch/ &&
 		test "$prev_branch_cl" -eq "$last_cl"
+	)
+'
+
+
+test_expect_success 'git pfc fetch' '
+	git p4 clone --dest="$git" //depot/mainbranch/@all &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$git" &&
+		last_cl=`extract_changelist_from_commit p4/master` &&
+		prev_cl=`extract_changelist_from_commit p4/master~1` &&
+		test $prev_cl -lt $last_cl &&
+		git update-ref refs/remotes/p4/master HEAD~1 &&
+		this_cl=`extract_changelist_from_commit p4/master` &&
+		test $prev_cl -eq $this_cl &&
+		git pfc fetch &&
+		this_cl=`extract_changelist_from_commit p4/master` &&
+		test $last_cl -eq $this_cl &&
+		git pfc fsck p4/master~1 p4/master
 	)
 '
 

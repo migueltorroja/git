@@ -93,6 +93,10 @@ struct depot_changelist_desc_t
 }while(0)
 
 
+#define GITP4_CHANGE_STAMP_NONE (0)
+#define GITP4_CHANGE_STAMP_REF (1)
+#define GITP4_CHANGE_STAMP_CHERRY_PICK (2)
+
 static void wildcard_encode(struct strbuf *sb);
 
 struct command_t;
@@ -818,14 +822,28 @@ int extract_p4_settings_git_log(struct hashmap *map, const char *log)
 	return 0;
 }
 
-void strbuf_add_gitp4(struct strbuf *sb, struct depot_file_t *p)
+void strbuf_add_gitp4(struct strbuf *sb, const char *depot_path, int cl)
+{
+	strbuf_addf(sb, "[git-p4: depot-paths = \"%s", depot_path);
+	if (!ends_with(depot_path, "/"))
+		strbuf_addch(sb, '/');
+	strbuf_addf(sb, "\": change = %d]", cl);
+}
+
+void strbuf_add_gitp4_df(struct strbuf *sb, const struct depot_file_t *p)
 {
 	if (p->is_revision)
 		die("Revision not supported");
-	strbuf_addf(sb, "[git-p4: depot-paths = \"%s", p->depot_path_file.buf);
-	if (!ends_with(p->depot_path_file.buf, "/"))
-		strbuf_addch(sb, '/');
-	strbuf_addf(sb, "\": change = %d]", p->chg_rev);
+	strbuf_add_gitp4(sb, p->depot_path_file.buf, p->chg_rev);
+}
+
+void strbuf_add_gitp4_cl_desc(struct strbuf *sb, const struct depot_changelist_desc_t *p)
+{
+	int cl;
+	if (p->change_source != CHANGE_SRC_P4)
+		die("Only p4 descriptions");
+	cl = atoi(p->changelist_or_commit.buf);
+	strbuf_add_gitp4(sb, p->depot_base.buf, cl);
 }
 
 int find_p4_depot_commit(struct strbuf *strb_commit, struct depot_file_t *p)
@@ -833,7 +851,7 @@ int find_p4_depot_commit(struct strbuf *strb_commit, struct depot_file_t *p)
 	struct argv_array gitargs = ARGV_ARRAY_INIT;
 	struct strbuf git_p4_line = STRBUF_INIT;
 	int rout = -1;
-	strbuf_add_gitp4(&git_p4_line, p);
+	strbuf_add_gitp4_df(&git_p4_line, p);
 	argv_array_push(&gitargs, "log");
 	argv_array_push(&gitargs, "--format=format:%H");
 	argv_array_push(&gitargs, "--first-parent");
@@ -2383,7 +2401,8 @@ static int p4revtoi(const char *p4rev)
 static int add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 		struct depot_changelist_desc_t *current,
 		const char *depot_path,
-		int changelist)
+		int changelist,
+		int change_stamp_fmt)
 {
 	const char *depotfile_str = "depotFile";
 	const int depotfile_len = strlen(depotfile_str);
@@ -2410,8 +2429,19 @@ static int add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 		is_shelved = str_dict_get_value(&map, "shelved")!=NULL;
 		p4user = p4usermap_cache_get_name_email_str_by_user(str_dict_get_kw(&map, "user")->val.buf);
 		strbuf_addbuf(&current->desc, &str_dict_get_kw(&map, "desc")->val);
-		strbuf_addf(&current->desc,
-			"\n[git-p4-cherry-pick: %s...@=%d]", depot_path, changelist);
+		switch (change_stamp_fmt) {
+			case GITP4_CHANGE_STAMP_NONE:
+				break;
+			case GITP4_CHANGE_STAMP_REF:
+				strbuf_addf(&current->desc, "\n");
+				strbuf_add_gitp4_cl_desc(&current->desc, current);
+				strbuf_addf(&current->desc, "\n");
+				break;
+			case GITP4_CHANGE_STAMP_CHERRY_PICK:
+				strbuf_addf(&current->desc,
+						"\n[git-p4-cherry-pick: %s...@=%d]", depot_path, changelist);
+				break;
+		}
 		strbuf_addbuf(&current->changelist_or_commit, &str_dict_get_kw(&map, "change")->val);
 		strbuf_addstr(&current->committer, p4user);
 		strbuf_addbuf(&current->time, &str_dict_get_kw(&map, "time")->val);
@@ -2497,7 +2527,8 @@ static void add_list_files_from_changelist_range(struct list_head *list_changes,
 	add_list_files_from_changelist(prev,
 			current,
 			chrng->depot_path.buf,
-			chrng->start_changelist);
+			chrng->start_changelist,
+			GITP4_CHANGE_STAMP_CHERRY_PICK);
 	list_add(&current->list, list_changes);
 	list_add(&prev->list, list_changes);
 }
@@ -2846,7 +2877,7 @@ static int p4create_new_p4_branch(struct strbuf *lbranch, struct depot_file_pair
 	strbuf_addstr(&user, p4usermap_cache_get_name_email_str_by_user(str_dict_get_value(&m_describe, "user")));
 	LOG_GITP4_DEBUG("user full address %s\n", user.buf);
 	str_dict_set_key_val(&m_describe, "branch", lbranch->buf);
-	strbuf_add_gitp4(&gitp4_line, &dp->a);
+	strbuf_add_gitp4_df(&gitp4_line, &dp->a);
 	str_dict_set_key_valf(&m_describe, "msg", "%s\n%s\n",
 			str_dict_get_value(&m_describe, "desc"), gitp4_line.buf);
 	str_dict_set_key_val(&m_describe, "committer", user.buf);
@@ -3109,7 +3140,8 @@ static int p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 						str_dict_get_value(&p4_change, "change"));
 			add_list_files_from_changelist(NULL, change_elem,
 					depot_path,
-					atoi(change_elem->changelist_or_commit.buf));
+					atoi(change_elem->changelist_or_commit.buf),
+					GITP4_CHANGE_STAMP_REF);
 			list_add_tail(&change_elem->list, &list_of_changes);
 		}
 		finish_command(&child_p4);
