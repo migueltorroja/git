@@ -665,7 +665,7 @@ test_expect_success 'git pfc fetch after discover branches' '
 #'
 
 
-test_expect_success 'git pfc fetch' '
+test_expect_success 'git pfc fetch all' '
 	git p4 clone --dest="$git" //depot/mainbranch/@all &&
 	test_when_finished cleanup_git &&
 	(
