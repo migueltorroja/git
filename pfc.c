@@ -671,34 +671,31 @@ int branch_exists(const char *ref_name)
 	return (rout == 0)?1:0;
 }
 
-static void p4_branches_in_git_cb(struct strbuf *sb_line, void *arg)
+int p4_refs_in_git(const char *ref_prefix, struct hashmap *map)
 {
-	struct hashmap *map = (struct hashmap *) arg;
-	keyval_t *kw;
-	strbuf_trim(sb_line);
-	if (strncmp(sb_line->buf,"p4/",3) != 0)
-		return;
-	if (strncmp(sb_line->buf,"p4/HEAD",7) == 0)
-		return;
-	kw = keyval_init(NULL);
-	strbuf_addstr(&kw->key,sb_line->buf+3);
-	parse_revision(&kw->val,sb_line->buf);
-	str_dict_put_kw(map,kw);
-}
-
-int p4_branches_in_git(struct hashmap *map, int local_branches)
-{
-	struct argv_array gitargs = ARGV_ARRAY_INIT;
-	argv_array_push(&gitargs, "rev-parse");
-	argv_array_push(&gitargs, "--symbolic");
-	if (local_branches)
-		argv_array_push(&gitargs, "--branches");
-	else
-		argv_array_push(&gitargs, "--remotes");
-	if (git_cmd_read_pipe_line(gitargs.argv, p4_branches_in_git_cb, map) != 0)
-		die("Error quering p4 branches listn");
-	argv_array_clear(&gitargs);
-	return 0;
+	struct child_process child_git = CHILD_PROCESS_INIT;
+	struct strbuf sbline = STRBUF_INIT;
+	FILE *fp;
+	child_git.git_cmd = 1;
+	child_git.out = -1;
+	argv_array_push(&child_git.args, "show-ref");
+	if (start_command(&child_git))
+		die("cannot start git process");
+	fp = fdopen(child_git.out,"r");
+	while (EOF != strbuf_getline(&sbline, fp)) {
+		const char *sp_ptr = strchr(sbline.buf, ' ');
+		const char *ref_ptr = sp_ptr + 1;
+		if (NULL == sp_ptr)
+			continue;
+		if (!starts_with(ref_ptr, ref_prefix))
+			continue;
+		if (ends_with(sbline.buf, "/HEAD"))
+			continue;
+		str_dict_set_key_valf(map, ref_ptr,"%.*s", sp_ptr - sbline.buf, sbline.buf);
+	}
+	fclose(fp);
+	strbuf_release(&sbline);
+	return finish_command(&child_git);
 }
 
 
@@ -726,43 +723,6 @@ void extract_log_message(const char *commit, struct strbuf *sb)
 	logst.logmessage = sb;
 	if (git_cmd_read_pipe_line(cmd_list, extract_log_message_and_job_cb, &logst) != 0)
 		die("Error extract log from commit %s", commit);
-}
-
-int p4_local_branches_in_git(struct hashmap *map)
-{
-	return p4_branches_in_git(map, 1);
-}
-
-int p4_remote_branches_in_git(struct hashmap *map)
-{
-	return p4_branches_in_git(map, 0);
-}
-
-int p4_refs_in_git(const char *ref_prefix, struct hashmap *map)
-{
-	struct child_process child_git = CHILD_PROCESS_INIT;
-	struct strbuf sbline = STRBUF_INIT;
-	FILE *fp;
-	child_git.git_cmd = 1;
-	child_git.out = -1;
-	argv_array_push(&child_git.args, "show-ref");
-	if (start_command(&child_git))
-		die("cannot start git process");
-	fp = fdopen(child_git.out,"r");
-	while (EOF != strbuf_getline(&sbline, fp)) {
-		const char *sp_ptr = strchr(sbline.buf, ' ');
-		const char *ref_ptr = sp_ptr + 1;
-		if (NULL == sp_ptr)
-			continue;
-		if (!starts_with(ref_ptr, ref_prefix))
-			continue;
-		if (ends_with(sbline.buf, "/HEAD"))
-			continue;
-		str_dict_set_key_valf(map, ref_ptr,"%.*s", sp_ptr - sbline.buf, sbline.buf);
-	}
-	fclose(fp);
-	strbuf_release(&sbline);
-	return finish_command(&child_git);
 }
 
 static void strbuf_strip_boundaries(struct strbuf *sb, const char * boundaries, int optional)
@@ -927,33 +887,6 @@ int find_p4_parent_commit(struct strbuf *strb_commit, struct hashmap *p4settings
 		rout = -1;
 	strbuf_release(&sb);
 	return rout;
-}
-
-static void get_branch_by_depot(int local , struct hashmap *branch_by_depot_dict)
-{
-	struct hashmap map;
-	struct hashmap_iter hm_iter;
-	struct hashmap_entry *entry;
-	str_dict_init(&map);
-	p4_branches_in_git(&map,local);
-	hashmap_iter_init(&map, &hm_iter);
-	while ((entry = hashmap_iter_next(&hm_iter))) {
-		struct strbuf sb = STRBUF_INIT;
-		struct hashmap settings_map;
-		const char *depot_path = NULL;
-		const keyval_t *kw = container_of(entry, const keyval_t, ent);
-		str_dict_init(&settings_map);
-		extract_log_message(kw->val.buf, &sb);
-		LOG_GITP4_DEBUG("git log message:\n%s\n", sb.buf);
-		extract_p4_settings_git_log(&settings_map, sb.buf);
-		str_dict_print(p4_verbose_debug.fp, &settings_map);
-		depot_path = str_dict_get_value(&settings_map,"depot-paths");
-		if (depot_path)
-			str_dict_set_key_valf(branch_by_depot_dict, depot_path, "remotes/p4/%s", kw->key.buf);
-		strbuf_release(&sb);
-		str_dict_destroy(&settings_map);
-	}
-	str_dict_destroy(&map);
 }
 
 int find_upstream_branch_point(int local,struct strbuf *upstream, struct hashmap *p4settings )
@@ -1893,18 +1826,6 @@ int p4submit_cmd_run(struct command_t *pcmd, int argc, const char **argv)
 	if (branch) {
 		strbuf_reset(&p4submit_options.branch);
 		strbuf_addf(&p4submit_options.branch, "%s",branch);
-	}
-	if (IS_LOG_DEBUG_ALLOWED) {
-		str_dict_init(&map);
-		p4_local_branches_in_git(&map);
-		LOG_GITP4_DEBUG("Local:\n");
-		str_dict_print(p4_verbose_debug.fp, &map);
-		str_dict_destroy(&map);
-		str_dict_init(&map);
-		p4_remote_branches_in_git(&map);
-		LOG_GITP4_DEBUG("Remotes:\n");
-		str_dict_print(p4_verbose_debug.fp, &map);
-		str_dict_destroy(&map);
 	}
 	if (argc == 0) {
 		if (current_git_branch(&strb_master) != 0)
