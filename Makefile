@@ -2346,6 +2346,7 @@ VCSSVN_OBJS += vcs-svn/svndump.o
 VCSP4_OBJS += vcs-p4/py-marshal.o
 VCSP4_OBJS += vcs-p4/strbuf-dict.o
 VCSP4_OBJS += vcs-p4/md5.o
+VCSP4_OBJS += vcs-p4/git-p4-lib.o
 
 TEST_OBJS := $(patsubst %$X,%.o,$(TEST_PROGRAMS)) $(patsubst %,t/helper/%,$(TEST_BUILTINS_OBJS))
 OBJECTS := $(LIB_OBJS) $(BUILTIN_OBJS) $(PROGRAM_OBJS) $(TEST_OBJS) \
