@@ -738,6 +738,33 @@ int p4_remote_branches_in_git(struct hashmap *map)
 	return p4_branches_in_git(map, 0);
 }
 
+int p4_refs_in_git(const char *ref_prefix, struct hashmap *map)
+{
+	struct child_process child_git = CHILD_PROCESS_INIT;
+	struct strbuf sbline = STRBUF_INIT;
+	FILE *fp;
+	child_git.git_cmd = 1;
+	child_git.out = -1;
+	argv_array_push(&child_git.args, "show-ref");
+	if (start_command(&child_git))
+		die("cannot start git process");
+	fp = fdopen(child_git.out,"r");
+	while (EOF != strbuf_getline(&sbline, fp)) {
+		const char *sp_ptr = strchr(sbline.buf, ' ');
+		const char *ref_ptr = sp_ptr + 1;
+		if (NULL == sp_ptr)
+			continue;
+		if (!starts_with(ref_ptr, ref_prefix))
+			continue;
+		if (ends_with(sbline.buf, "/HEAD"))
+			continue;
+		str_dict_set_key_valf(map, ref_ptr,"%.*s", sp_ptr - sbline.buf, sbline.buf);
+	}
+	fclose(fp);
+	strbuf_release(&sbline);
+	return finish_command(&child_git);
+}
+
 static void strbuf_strip_boundaries(struct strbuf *sb, const char * boundaries, int optional)
 {
 	int l_delim;
@@ -3073,21 +3100,16 @@ static int p4fetch_fast_import(struct list_head *l, const char *ref)
 	return finish_command(&git_fast_import);
 }
 
-static int p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
+int p4_fetch_refs(const char *ref_prefix)
 {
-#if 0
-	struct option options[] = {
-		OPT_END()
-	};
-#endif
 	struct hashmap map;
 	struct hashmap_iter hm_iter;
 	struct hashmap_entry *entry;
 	int res = 0;
 	str_dict_init(&map);
-	p4_remote_branches_in_git(&map);
+	p4_refs_in_git(ref_prefix, &map);
 	if (IS_LOG_DEBUG_ALLOWED) {
-		LOG_GITP4_DEBUG("Remotes:\n");
+		LOG_GITP4_DEBUG("p4 references:\n");
 		str_dict_print(p4_verbose_debug.fp, &map);
 	}
 	hashmap_iter_init(&map, &hm_iter);
@@ -3100,7 +3122,6 @@ static int p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 		struct child_process child_p4 = CHILD_PROCESS_INIT;
 		struct hashmap p4_change;
 		struct depot_changelist_desc_t *change_elem = NULL;
-		struct strbuf git_reference = STRBUF_INIT;
 		LIST_HEAD(list_of_changes);
 		str_dict_init(&settings_map);
 		str_dict_init(&p4_change);
@@ -3145,9 +3166,7 @@ static int p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 			list_add_tail(&change_elem->list, &list_of_changes);
 		}
 		finish_command(&child_p4);
-		strbuf_addf(&git_reference, "refs/remotes/p4/%s", kw->key.buf);
-		res = p4fetch_fast_import(&list_of_changes, git_reference.buf);
-		strbuf_release(&git_reference);
+		res = p4fetch_fast_import(&list_of_changes, kw->key.buf);
 		list_depot_changelist_desc_destroy(&list_of_changes);
 		str_dict_destroy(&p4_change);
 		str_dict_destroy(&settings_map);
@@ -3157,6 +3176,16 @@ static int p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
 	}
 	str_dict_destroy(&map);
 	return res;
+}
+
+static int p4fetch_cmd_run(command_t *pcmd, int argc, const char **argv)
+{
+#if 0
+	struct option options[] = {
+		OPT_END()
+	};
+#endif
+	return p4_fetch_refs("refs/remotes/p4/");
 }
 
 
