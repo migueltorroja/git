@@ -3022,6 +3022,58 @@ static int p4fetch_fast_import(struct list_head *l, const char *ref)
 	return finish_command(&git_fast_import);
 }
 
+
+int p4_fetch_update_ref(const char *ref, const char *prev_commit, const char *depot_path, int start_changelist)
+{
+	int res = 0;
+	struct child_process child_p4 = CHILD_PROCESS_INIT;
+	struct hashmap p4_change;
+	struct depot_changelist_desc_t *change_elem = NULL;
+	LIST_HEAD(list_of_changes);
+	str_dict_init(&p4_change);
+	change_elem = malloc(sizeof(struct depot_changelist_desc_t));
+	INIT_DEPOT_CHANGELIST_DESC(change_elem);
+	change_elem->change_source = CHANGE_SRC_GIT;
+	strbuf_addf(&change_elem->changelist_or_commit, "%s", prev_commit);
+	list_add_tail(&change_elem->list, &list_of_changes);
+	child_p4.out = -1;
+	if (IS_LOG_DEBUG_ALLOWED) {
+		fprintf(p4_verbose_debug.fp, "%s...@%d\n", depot_path, start_changelist);
+	}
+	argv_array_push(&child_p4.args, "changes");
+	argv_array_push(&child_p4.args, "-r");
+	argv_array_pushf(&child_p4.args, "%s...@%d,#head", depot_path, start_changelist);
+	p4_start_command(&child_p4);
+	while (py_marshal_parse(&p4_change, child_p4.out)) {
+		if (!str_dict_has(&p4_change, "code"))
+			continue;
+		if (str_dict_strcmp(&p4_change, "code", "stat"))
+			continue;
+		if (!str_dict_has(&p4_change, "change"))
+			continue;
+		if (IS_LOG_DEBUG_ALLOWED) {
+			fprintf(p4_verbose_debug.fp, "fetching %s...@=%s\n", depot_path,
+					str_dict_get_value(&p4_change, "change"));
+		}
+		change_elem = malloc(sizeof(struct depot_changelist_desc_t));
+		INIT_DEPOT_CHANGELIST_DESC(change_elem);
+		change_elem->change_source = CHANGE_SRC_P4;
+		strbuf_addstr(&change_elem->depot_base, depot_path);
+		strbuf_addstr(&change_elem->changelist_or_commit,
+					str_dict_get_value(&p4_change, "change"));
+		add_list_files_from_changelist(NULL, change_elem,
+				depot_path,
+				atoi(change_elem->changelist_or_commit.buf),
+				GITP4_CHANGE_STAMP_REF);
+		list_add_tail(&change_elem->list, &list_of_changes);
+	}
+	finish_command(&child_p4);
+	res = p4fetch_fast_import(&list_of_changes, ref);
+	list_depot_changelist_desc_destroy(&list_of_changes);
+	str_dict_destroy(&p4_change);
+	return res;
+}
+
 int p4_fetch_refs(const char *ref_prefix)
 {
 	struct hashmap map;
@@ -3041,56 +3093,12 @@ int p4_fetch_refs(const char *ref_prefix)
 		const char *depot_path = NULL;
 		int changelist;
 		const keyval_t *kw = container_of(entry, const keyval_t, ent);
-		struct child_process child_p4 = CHILD_PROCESS_INIT;
-		struct hashmap p4_change;
-		struct depot_changelist_desc_t *change_elem = NULL;
-		LIST_HEAD(list_of_changes);
 		str_dict_init(&settings_map);
-		str_dict_init(&p4_change);
-		change_elem = malloc(sizeof(struct depot_changelist_desc_t));
-		INIT_DEPOT_CHANGELIST_DESC(change_elem);
-		change_elem->change_source = CHANGE_SRC_GIT;
-		strbuf_addbuf(&change_elem->changelist_or_commit, &kw->val);
-		list_add_tail(&change_elem->list, &list_of_changes);
 		extract_log_message(kw->val.buf, &sb);
 		extract_p4_settings_git_log(&settings_map, sb.buf);
 		depot_path = str_dict_get_value(&settings_map, "depot-paths");
 		changelist = atoi(str_dict_get_value(&settings_map, "change"));
-		if (IS_LOG_DEBUG_ALLOWED) {
-			fprintf(p4_verbose_debug.fp, "%s...@%d\n", depot_path, changelist);
-		}
-		child_p4.out = -1;
-		argv_array_push(&child_p4.args, "changes");
-		argv_array_push(&child_p4.args, "-r");
-		argv_array_pushf(&child_p4.args, "%s...@%d,#head", depot_path, changelist + 1);
-		p4_start_command(&child_p4);
-		while (py_marshal_parse(&p4_change, child_p4.out)) {
-			if (!str_dict_has(&p4_change, "code"))
-				continue;
-			if (str_dict_strcmp(&p4_change, "code", "stat"))
-				continue;
-			if (!str_dict_has(&p4_change, "change"))
-				continue;
-			if (IS_LOG_DEBUG_ALLOWED) {
-				fprintf(p4_verbose_debug.fp, "fetching %s...@=%s\n", depot_path,
-						str_dict_get_value(&p4_change, "change"));
-			}
-			change_elem = malloc(sizeof(struct depot_changelist_desc_t));
-			INIT_DEPOT_CHANGELIST_DESC(change_elem);
-			change_elem->change_source = CHANGE_SRC_P4;
-			strbuf_addstr(&change_elem->depot_base, depot_path);
-			strbuf_addstr(&change_elem->changelist_or_commit,
-						str_dict_get_value(&p4_change, "change"));
-			add_list_files_from_changelist(NULL, change_elem,
-					depot_path,
-					atoi(change_elem->changelist_or_commit.buf),
-					GITP4_CHANGE_STAMP_REF);
-			list_add_tail(&change_elem->list, &list_of_changes);
-		}
-		finish_command(&child_p4);
-		res = p4fetch_fast_import(&list_of_changes, kw->key.buf);
-		list_depot_changelist_desc_destroy(&list_of_changes);
-		str_dict_destroy(&p4_change);
+		p4_fetch_update_ref(kw->key.buf, kw->val.buf, depot_path, changelist + 1);
 		str_dict_destroy(&settings_map);
 		strbuf_release(&sb);
 		if (res)
