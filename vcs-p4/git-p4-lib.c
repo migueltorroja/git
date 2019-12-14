@@ -3007,25 +3007,8 @@ void p4discover_branches_cmd_init(struct command_t *pcmd)
 	pcmd->data = 0;
 }
 
-
-static int p4fetch_fast_import(struct list_head *l, const char *ref)
+int p4_fetch_update_ref(int fd_out, const char *ref, const char *prev_commit, const char *depot_path, int start_changelist)
 {
-	struct child_process git_fast_import = CHILD_PROCESS_INIT;
-	argv_array_push(&git_fast_import.args, "git");
-	argv_array_push(&git_fast_import.args, "fast-import");
-	git_fast_import.in = -1;
-	if (start_command(&git_fast_import)) {
-		die("cannot start git fast-import");
-	}
-	p4export_list_changes(git_fast_import.in, l, ref);
-	close(git_fast_import.in);
-	return finish_command(&git_fast_import);
-}
-
-
-int p4_fetch_update_ref(const char *ref, const char *prev_commit, const char *depot_path, int start_changelist)
-{
-	int res = 0;
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap p4_change;
 	struct depot_changelist_desc_t *change_elem = NULL;
@@ -3070,10 +3053,10 @@ int p4_fetch_update_ref(const char *ref, const char *prev_commit, const char *de
 		list_add_tail(&change_elem->list, &list_of_changes);
 	}
 	finish_command(&child_p4);
-	res = p4fetch_fast_import(&list_of_changes, ref);
+	p4export_list_changes(fd_out, &list_of_changes, ref);
 	list_depot_changelist_desc_destroy(&list_of_changes);
 	str_dict_destroy(&p4_change);
-	return res;
+	return 0;
 }
 
 int p4_fetch_refs(const char *ref_prefix)
@@ -3095,12 +3078,21 @@ int p4_fetch_refs(const char *ref_prefix)
 		const char *depot_path = NULL;
 		int changelist;
 		const keyval_t *kw = container_of(entry, const keyval_t, ent);
+		struct child_process git_fast_import = CHILD_PROCESS_INIT;
+		argv_array_push(&git_fast_import.args, "fast-import");
+		git_fast_import.git_cmd = 1;
+		git_fast_import.in = -1;
 		str_dict_init(&settings_map);
 		extract_log_message(kw->val.buf, &sb);
 		extract_p4_settings_git_log(&settings_map, sb.buf);
 		depot_path = str_dict_get_value(&settings_map, "depot-paths");
 		changelist = atoi(str_dict_get_value(&settings_map, "change"));
-		p4_fetch_update_ref(kw->key.buf, kw->val.buf, depot_path, changelist + 1);
+		if (start_command(&git_fast_import)) {
+			die("cannot start git fast-import");
+		}
+		p4_fetch_update_ref(git_fast_import.in, kw->key.buf, kw->val.buf, depot_path, changelist + 1);
+		close(git_fast_import.in);
+		res = finish_command(&git_fast_import);
 		str_dict_destroy(&settings_map);
 		strbuf_release(&sb);
 		if (res)
