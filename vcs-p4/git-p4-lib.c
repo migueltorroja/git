@@ -3031,11 +3031,13 @@ int p4_fetch_update_ref(const char *ref, const char *prev_commit, const char *de
 	struct depot_changelist_desc_t *change_elem = NULL;
 	LIST_HEAD(list_of_changes);
 	str_dict_init(&p4_change);
-	change_elem = malloc(sizeof(struct depot_changelist_desc_t));
-	INIT_DEPOT_CHANGELIST_DESC(change_elem);
-	change_elem->change_source = CHANGE_SRC_GIT;
-	strbuf_addf(&change_elem->changelist_or_commit, "%s", prev_commit);
-	list_add_tail(&change_elem->list, &list_of_changes);
+	if (prev_commit) {
+		change_elem = malloc(sizeof(struct depot_changelist_desc_t));
+		INIT_DEPOT_CHANGELIST_DESC(change_elem);
+		change_elem->change_source = CHANGE_SRC_GIT;
+		strbuf_addf(&change_elem->changelist_or_commit, "%s", prev_commit);
+		list_add_tail(&change_elem->list, &list_of_changes);
+	}
 	child_p4.out = -1;
 	if (IS_LOG_DEBUG_ALLOWED) {
 		fprintf(p4_verbose_debug.fp, "%s...@%d\n", depot_path, start_changelist);
