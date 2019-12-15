@@ -62,8 +62,6 @@ static int cmd_import(const char *line)
 	if (strcmp(ref_name, remote_ref) != 0)
 		return 1;
 	res = p4_fetch_update_ref(STDOUT_FILENO, private_ref, NULL, get_master_depot_path(url_in), 1);
-	if (res != 0)
-		write_str_in_full(STDOUT_FILENO, "done\n");
 	return res;
 }
 
