@@ -114,5 +114,24 @@ test_expect_success 'git remote p4 clone' '
 	)
 '
 
+test_expect_success 'git remote p4 fetch' '
+	git clone p4://depot/mainbranch/ "$git" &&
+	test_when_finished cleanup_git &&
+	(
+		cd "$cli"/mainbranch &&
+		p4 edit file1 &&
+		printf "One more line\n" >>file1 &&
+		p4 submit -d "one more line" file1
+	) &&
+	(
+		cd "$git" &&
+		git fetch &&
+		cl=`p4 changes -m1 | sed -e "s/[^ ]\+ \([0-9]\+\) .*/\1/"` &&
+		last_fetch_cl=`extract_changelist_from_commit origin/master` &&
+		test "$cl" -eq "$last_fetch_cl" &&
+		git pfc fsck origin/master~1..origin/master
+	)
+'
+
 test_done
 
