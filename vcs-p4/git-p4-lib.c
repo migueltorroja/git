@@ -2391,7 +2391,6 @@ static int add_list_files_from_changelist(struct depot_changelist_desc_t *prev,
 						"\n[git-p4-cherry-pick: %s...@=%d]", depot_path, changelist);
 				break;
 		}
-		strbuf_addbuf(&current->changelist_or_commit, &str_dict_get_kw(&map, "change")->val);
 		strbuf_addstr(&current->committer, p4user);
 		strbuf_addbuf(&current->time, &str_dict_get_kw(&map, "time")->val);
 		if (prev) {
