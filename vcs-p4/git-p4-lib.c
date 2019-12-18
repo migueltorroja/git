@@ -2043,38 +2043,66 @@ static void fast_import_blob_fd(int fd_dst, int fd_src)
 	strbuf_release(&read_buf);
 }
 
-static void fast_import_blob_p4filedesc(int fd_out, const struct depot_file_t *p4f_in, const struct strbuf *sb_prefix)
+static void fast_export_inline_blob_p4file(int fd_out, struct list_head *list_of_files , const struct strbuf *sb_prefix)
 {
 	struct child_process child_p4 = CHILD_PROCESS_INIT;
 	struct hashmap map;
 	iconv_t icd = NULL;
 	unsigned mode = 0;
 	struct tempfile *temp = NULL;
+	struct list_head *pos;
+	struct strbuf input_file_args = STRBUF_INIT;
+	struct strbuf current_file_path = STRBUF_INIT;
 	str_dict_init(&map);
-	if (!starts_with(p4f_in->depot_path_file.buf, sb_prefix->buf))
-		goto _leave;
+	list_for_each(pos, list_of_files) {
+		struct depot_file_t *df;
+		df = list_entry(pos, struct depot_file_t, lhead);
+		if (!starts_with(df->depot_path_file.buf, sb_prefix->buf))
+			continue;
+		if (df->is_revision)
+			strbuf_addf(&input_file_args, "%s#%d\n", df->depot_path_file.buf, df->chg_rev);
+		else
+			strbuf_addf(&input_file_args, "%s@=%d\n", df->depot_path_file.buf, df->chg_rev);
+	}
+	argv_array_push(&child_p4.args, "-x");
+	argv_array_push(&child_p4.args, "-");
 	argv_array_push(&child_p4.args, "print");
 	child_p4.out = -1;
-	if (p4f_in->is_revision)
-		argv_array_pushf(&child_p4.args, "%s#%d", p4f_in->depot_path_file.buf, p4f_in->chg_rev);
-	else
-		argv_array_pushf(&child_p4.args, "%s@=%d", p4f_in->depot_path_file.buf, p4f_in->chg_rev);
+	child_p4.in = -1;
 	p4_start_command(&child_p4);
+	write_str_in_full(child_p4.in, input_file_args.buf);
+	close(child_p4.in);
 	while (py_marshal_parse(&map, child_p4.out)) {
 		const keyval_t *kw = NULL;
 		if (IS_LOG_DEBUG_ALLOWED)
 			str_dict_print(p4_verbose_debug.fp, &map);
 		if (!strcmp(str_dict_get_value(&map, "code"), "stat")) {
-			if (temp)
-				die("More than one file reported");
-			if (icd)
-				die("icd not NULL");
+			if (temp) {
+				struct strbuf filemodify = STRBUF_INIT;
+				strbuf_addf(&filemodify, "M %06o inline %s\n", mode,
+						current_file_path.buf);
+				write_str_in_full(fd_out, filemodify.buf);
+				fast_import_blob_fd(fd_out, temp->fd);
+				delete_tempfile(&temp);
+				strbuf_release(&filemodify);
+			}
+			if (icd) {
+				iconv_close(icd);
+				icd = NULL;
+			}
+			strbuf_release(&current_file_path);
 			temp = mks_tempfile_t(".p4_blob_XXXXXX");
 			if (!temp)
 				die ("Failed to create temp file");
 			if (p4type2bintype(str_dict_get_value(&map, "type")) == P4_FORMAT_UTF16_TYPE)
 				icd = iconv_open("utf16", "utf8");
 			mode = p4type2mode(str_dict_get_value(&map, "type"));
+			if (!str_dict_get_value(&map, "depotFile"))
+				die ("No depotFile field in p4 print data");
+			strbuf_addstr(&current_file_path, str_dict_get_value(&map, "depotFile"));
+			if (!starts_with(current_file_path.buf, sb_prefix->buf))
+				die("Unexpected depotFile reported by p4 print");
+			strbuf_remove(&current_file_path, 0, sb_prefix->len);
 			continue;
 		}
 		else if (strcmp(str_dict_get_value(&map, "code"), "text") &&
@@ -2109,7 +2137,7 @@ _leave:
 	if (temp) {
 		struct strbuf filemodify = STRBUF_INIT;
 		strbuf_addf(&filemodify, "M %06o inline %s\n", mode,
-				p4f_in->depot_path_file.buf + sb_prefix->len);
+				current_file_path.buf);
 		write_str_in_full(fd_out, filemodify.buf);
 		fast_import_blob_fd(fd_out, temp->fd);
 		delete_tempfile(&temp);
@@ -2119,6 +2147,8 @@ _leave:
 		iconv_close(icd);
 	close(child_p4.out);
 	finish_command(&child_p4);
+	strbuf_release(&input_file_args);
+	strbuf_release(&current_file_path);
 	str_dict_destroy(&map);
 }
 
@@ -2520,16 +2550,7 @@ static void p4export_apply_file_changes(int fd_out, struct depot_changelist_desc
 		write_str_in_full(fd_out, sb_del.buf);
 		strbuf_release(&sb_del);
 	}
-	list_for_each(pos, &pchange->list_of_modified_files) {
-		struct depot_file_t *df;
-		df = list_entry(pos, struct depot_file_t, lhead);
-		if (!starts_with(df->depot_path_file.buf, dp_sb->buf))
-			continue;
-		struct depot_file_t df_out;
-		depot_file_init(&df_out);
-		fast_import_blob_p4filedesc(fd_out, df, dp_sb);
-		depot_file_destroy(&df_out);
-	}
+	fast_export_inline_blob_p4file(fd_out, &pchange->list_of_modified_files, dp_sb);
 }
 
 static int p4export_list_changes(int fd_out, struct list_head *plist, const char *ref)
