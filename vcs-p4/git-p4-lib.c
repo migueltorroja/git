@@ -2050,28 +2050,32 @@ static void fast_export_inline_blob_p4file(int fd_out, struct list_head *list_of
 	iconv_t icd = NULL;
 	unsigned mode = 0;
 	struct tempfile *temp = NULL;
+	struct tempfile *p4_args_temp = NULL;
 	struct list_head *pos;
-	struct strbuf input_file_args = STRBUF_INIT;
 	struct strbuf current_file_path = STRBUF_INIT;
 	str_dict_init(&map);
+	p4_args_temp = mks_tempfile_t(".p4_file_args_XXXXXX");
+	if (!p4_args_temp)
+		die("Temp file couldn't be created");
+	FILE *fp_in_args = fdopen(p4_args_temp->fd, "w");
+	if (!fp_in_args)
+		die("fdopen failed");
+	argv_array_push(&child_p4.args, "-x");
+	argv_array_push(&child_p4.args, p4_args_temp->filename.buf);
+	argv_array_push(&child_p4.args, "print");
+	child_p4.out = -1;
+	p4_start_command(&child_p4);
 	list_for_each(pos, list_of_files) {
 		struct depot_file_t *df;
 		df = list_entry(pos, struct depot_file_t, lhead);
 		if (!starts_with(df->depot_path_file.buf, sb_prefix->buf))
 			continue;
 		if (df->is_revision)
-			strbuf_addf(&input_file_args, "%s#%d\n", df->depot_path_file.buf, df->chg_rev);
+			fprintf(fp_in_args, "%s#%d\n", df->depot_path_file.buf, df->chg_rev);
 		else
-			strbuf_addf(&input_file_args, "%s@=%d\n", df->depot_path_file.buf, df->chg_rev);
+			fprintf(fp_in_args, "%s@=%d\n", df->depot_path_file.buf, df->chg_rev);
 	}
-	argv_array_push(&child_p4.args, "-x");
-	argv_array_push(&child_p4.args, "-");
-	argv_array_push(&child_p4.args, "print");
-	child_p4.out = -1;
-	child_p4.in = -1;
-	p4_start_command(&child_p4);
-	write_str_in_full(child_p4.in, input_file_args.buf);
-	close(child_p4.in);
+	fclose(fp_in_args);
 	while (py_marshal_parse(&map, child_p4.out)) {
 		const keyval_t *kw = NULL;
 		if (IS_LOG_DEBUG_ALLOWED)
@@ -2147,8 +2151,8 @@ _leave:
 		iconv_close(icd);
 	close(child_p4.out);
 	finish_command(&child_p4);
-	strbuf_release(&input_file_args);
 	strbuf_release(&current_file_path);
+	delete_tempfile(&p4_args_temp);
 	str_dict_destroy(&map);
 }
 
